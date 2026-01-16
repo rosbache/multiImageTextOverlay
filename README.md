@@ -7,6 +7,7 @@ A Python tool that reads JPG images, extracts EXIF metadata (date, time, GPS loc
 - 📸 Extracts EXIF metadata from JPG images
 - 🕒 Displays date and time from image metadata
 - 📍 Shows GPS location in human-readable format (e.g., 40°42'46"N, 74°0'21"W)
+- 🗺️ Converts GPS coordinates to UTM or other projected coordinate systems
 - 🎨 Customizable text appearance (color, size, position)
 - ✨ Text outline for better visibility using native Pillow stroke API
 - 🔄 Batch processing with multiprocessing (up to 6 workers by default)
@@ -129,6 +130,12 @@ Edit `config.py` to customize default settings:
 ### Output Settings
 - `OUTPUT_QUALITY`: JPEG quality 1-100 (default: 95)
 
+### Coordinate System Settings
+- `SHOW_UTM_COORDINATES`: Enable/disable UTM coordinate display (default: True)
+- `TARGET_EPSG`: Target EPSG code for coordinate transformation (default: 25832 - UTM Zone 32N)
+- `UTM_ZONE`: UTM zone number for display (default: 32)
+- `UTM_HEMISPHERE`: UTM hemisphere, 'N' or 'S' (default: 'N')
+
 ### Processing Settings
 - `MAX_WORKERS`: Maximum number of parallel workers (default: 6)
 - `FILE_COLLISION_MODE`: How to handle existing files - 'overwrite', 'skip', 'rename' (default: 'rename')
@@ -139,15 +146,29 @@ The overlay will display metadata like:
 ```
 Date: 2024-08-15 14:30:22
 Location: 40°42'46"N, 74°0'21"W
+UTM 32N: 123456.78E, 987654.32N
 ```
 
 If an image has no metadata, it will display: "No metadata available"
+
+### Coordinate System Conversion
+
+The tool supports automatic conversion of GPS coordinates (WGS84) to UTM or other projected coordinate systems:
+
+- **WGS84 to UTM conversion**: GPS coordinates are automatically transformed to UTM coordinates
+- **Customizable target CRS**: Configure any EPSG code in `config.py` (e.g., 25832 for UTM Zone 32N, 25833 for UTM Zone 33N)
+- **Display both formats**: Shows both degree-minute-second format and UTM coordinates on the image
+- **Efficient caching**: Coordinate transformers are cached per process to optimize batch operations
+- **Error resilient**: Falls back gracefully if coordinate transformation fails
+
+The coordinate conversion uses the **pyproj** library, which provides accurate transformations between different coordinate reference systems based on PROJ definitions.
 
 ## Dependencies
 
 - **Pillow (PIL) >= 10.0.0**: Image processing and text rendering
 - **piexif >= 1.1.3**: EXIF metadata extraction
 - **tqdm >= 4.65.0**: Progress bars for batch processing
+- **pyproj >= 3.0.0**: Coordinate system transformations (WGS84 to UTM/other CRS)
 
 ## Advanced Features
 
