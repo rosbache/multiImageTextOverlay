@@ -17,24 +17,36 @@ def create_overlay_text(metadata: dict) -> str:
     Create formatted text string from metadata.
     
     Args:
-        metadata: Dictionary with 'datetime', 'location', and optionally 'location_utm' keys
+        metadata: Dictionary with 'filename', 'datetime', 'location', 'altitude', and optionally 'location_utm' keys
         
     Returns:
         Formatted text string for overlay
     """
     lines = []
     
-    if metadata['datetime']:
+    # Add filename first (if available)
+    if metadata.get('filename'):
+        lines.append(metadata['filename'])
+    
+    if metadata.get('datetime'):
         # Format datetime (from "YYYY:MM:DD HH:MM:SS" to more readable format)
         datetime_str = metadata['datetime'].replace(':', '-', 2)
         lines.append(f"Date: {datetime_str}")
     
-    if metadata['location']:
+    if metadata.get('location'):
         lines.append(f"Location: {metadata['location']}")
     
     # Add UTM coordinates if available
     if metadata.get('location_utm'):
-        lines.append(f"         {metadata['location_utm']}")
+        lines.append(metadata['location_utm'])
+    
+    # Add altitude/height if available
+    if metadata.get('altitude') is not None:
+        lines.append(f"Height: {metadata['altitude']:.1f} m")
+    
+    # If only filename exists, add "No metadata available"
+    if lines and len(lines) == 1 and metadata.get('filename'):
+        lines.append("No metadata available")
     
     return '\n'.join(lines) if lines else "No metadata available"
 
@@ -90,8 +102,11 @@ def process_image(input_path: str, output_path: str) -> bool:
         True if successful, False otherwise
     """
     try:
+        # Extract filename without extension
+        filename_base = Path(input_path).stem
+        
         # Extract EXIF metadata
-        metadata = extract_exif_data(input_path)
+        metadata = extract_exif_data(input_path, filename=filename_base)
         
         # Open and verify image
         try:
