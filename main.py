@@ -253,9 +253,9 @@ def main():
         logging.error(f"Configuration error: {e}")
         sys.exit(1)
     
-    # Define directories
-    input_dir = Path(args.input)
-    output_dir = Path(args.output)
+    # Determine input and output directories
+    input_dir = Path(args.input if args.input else config.INPUT_DIR)
+    output_dir = Path(args.output if args.output else config.OUTPUT_DIR)
     
     # Check if input directory exists
     if not input_dir.exists():
@@ -271,11 +271,9 @@ def main():
         logging.error(f"Failed to create output directory: {e}")
         sys.exit(1)
     
-    # Get all JPG files from input directory
-    jpg_extensions = ['*.jpg', '*.JPG', '*.jpeg', '*.JPEG']
-    jpg_files = []
-    for ext in jpg_extensions:
-        jpg_files.extend(input_dir.glob(ext))
+    # Get all JPG files from input directory (case-insensitive)
+    jpg_files = [f for f in input_dir.iterdir() 
+                 if f.is_file() and f.suffix.lower() in ['.jpg', '.jpeg']]
     
     if not jpg_files:
         logging.warning(f"No JPG images found in '{input_dir}' directory.")
