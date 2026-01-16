@@ -116,6 +116,18 @@ Examples:
         help=f'Output JPEG quality 1-100 (default: {config.OUTPUT_QUALITY})'
     )
     
+    # Coordinate system options
+    parser.add_argument(
+        '--target-epsg',
+        type=int,
+        help=f'Target EPSG code for coordinate transformation (default: {config.TARGET_EPSG})'
+    )
+    parser.add_argument(
+        '--no-utm',
+        action='store_true',
+        help='Disable UTM coordinate display (show only WGS84)'
+    )
+    
     # Processing options
     parser.add_argument(
         '--workers', '-w',
@@ -170,6 +182,10 @@ def apply_argument_overrides(args):
         config.FONT_SIZE = args.font_size
     if args.quality:
         config.OUTPUT_QUALITY = args.quality
+    if args.target_epsg:
+        config.TARGET_EPSG = args.target_epsg
+    if args.no_utm:
+        config.SHOW_UTM_COORDINATES = False
     
     # Update file collision mode
     config.FILE_COLLISION_MODE = args.collision
@@ -200,17 +216,22 @@ def get_unique_output_path(output_path: Path) -> Path:
         counter += 1
 
 
-def process_single_image(args_tuple: Tuple[Path, Path, str]) -> Tuple[bool, str, str]:
+def process_single_image(args_tuple: Tuple[Path, Path, str, dict]) -> Tuple[bool, str, str]:
     """
     Wrapper function for processing a single image (for multiprocessing).
     
     Args:
-        args_tuple: Tuple of (input_path, output_dir, collision_mode)
+        args_tuple: Tuple of (input_path, output_dir, collision_mode, config_dict)
         
     Returns:
         Tuple of (success, input_filename, message)
     """
-    input_path, output_dir, collision_mode = args_tuple
+    input_path, output_dir, collision_mode, config_dict = args_tuple
+    
+    # Apply config overrides in worker process
+    import config
+    for key, value in config_dict.items():
+        setattr(config, key, value)
     
     # Create output path with same filename
     output_path = output_dir / input_path.name
@@ -252,6 +273,19 @@ def main():
     except ValueError as e:
         logging.error(f"Configuration error: {e}")
         sys.exit(1)
+    
+    # Validate EPSG code if UTM coordinates are enabled
+    if config.SHOW_UTM_COORDINATES:
+        try:
+            from pyproj import CRS
+            # Test if EPSG code is valid
+            test_crs = CRS.from_epsg(config.TARGET_EPSG)
+            logging.info(f"Using coordinate system: {test_crs.name} (EPSG:{config.TARGET_EPSG})")
+        except Exception as e:
+            logging.error(f"Invalid EPSG code {config.TARGET_EPSG}: {e}")
+            logging.error("Please specify a valid EPSG code using --target-epsg")
+            logging.error("Common EPSG codes: 25832 (UTM 32N), 25833 (UTM 33N), 32632 (WGS84 UTM 32N)")
+            sys.exit(1)
     
     # Determine input and output directories
     input_dir = Path(args.input if args.input else config.INPUT_DIR)
@@ -295,12 +329,24 @@ def main():
         logging.info(f"  Text color: RGB{config.TEXT_COLOR}")
         logging.info(f"  Font size: {config.FONT_SIZE}")
         logging.info(f"  Output quality: {config.OUTPUT_QUALITY}")
+        logging.info(f"  Show UTM coordinates: {config.SHOW_UTM_COORDINATES}")
+        if config.SHOW_UTM_COORDINATES:
+            logging.info(f"  Target EPSG: {config.TARGET_EPSG}")
+            logging.info(f"  UTM Zone: {config.UTM_ZONE}{config.UTM_HEMISPHERE}")
         logging.info(f"  Max workers: {args.workers}")
         logging.info(f"  Collision mode: {args.collision}")
         return
     
     # Prepare arguments for multiprocessing
-    process_args = [(jpg_file, output_dir, args.collision) for jpg_file in jpg_files]
+    config_dict = {
+        'TEXT_POSITION': config.TEXT_POSITION,
+        'TEXT_COLOR': config.TEXT_COLOR,
+        'FONT_SIZE': config.FONT_SIZE,
+        'OUTPUT_QUALITY': config.OUTPUT_QUALITY,
+        'TARGET_EPSG': config.TARGET_EPSG,
+        'SHOW_UTM_COORDINATES': config.SHOW_UTM_COORDINATES,
+    }
+    process_args = [(jpg_file, output_dir, args.collision, config_dict) for jpg_file in jpg_files]
     
     # Process images with multiprocessing
     success_count = 0
