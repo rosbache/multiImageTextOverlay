@@ -152,6 +152,7 @@ UTM 32N: 123456.78E, 987654.32N
 
 
 If an image has no metadata, it will display: "No metadata available"
+
 <img width="182" height="22" alt="image" src="https://github.com/user-attachments/assets/35d27b54-1ed4-4f12-9df2-aa91b9ada588" />
 
 ### Coordinate System Conversion
