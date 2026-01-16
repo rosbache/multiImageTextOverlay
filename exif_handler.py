@@ -128,21 +128,26 @@ def format_utm_coordinates(easting: float, northing: float, zone: int, hemispher
     return f"UTM {zone}{hemisphere}: {easting:.2f}E, {northing:.2f}N"
 
 
-def extract_exif_data(image_path: str) -> dict:
+def extract_exif_data(image_path: str, filename: str = None) -> dict:
     """
     Extract EXIF metadata from a JPG image.
     
     Args:
         image_path: Path to the JPG image file
+        filename: Filename to include in metadata (optional)
         
     Returns:
         Dictionary containing:
+        - 'filename': Filename (or None)
         - 'datetime': Date and time string (or None)
         - 'location': Human-readable GPS coordinates (or None)
+        - 'altitude': Altitude in meters (or None)
     """
     result = {
+        'filename': filename,
         'datetime': None,
-        'location': None
+        'location': None,
+        'altitude': None
     }
     
     try:
@@ -203,6 +208,26 @@ def extract_exif_data(image_path: str) -> dict:
                     lat_str = decimal_to_dms(lat_decimal, is_latitude=True)
                     lon_str = decimal_to_dms(lon_decimal, is_latitude=False)
                     result['location'] = f"{lat_str}, {lon_str}"
+                    
+                    # Extract GPS altitude if available
+                    if piexif.GPSIFD.GPSAltitude in gps_data:
+                        try:
+                            altitude_rational = gps_data[piexif.GPSIFD.GPSAltitude]
+                            altitude_ref = gps_data.get(piexif.GPSIFD.GPSAltitudeRef, 0)
+                            
+                            # Convert rational to float
+                            if isinstance(altitude_rational, tuple) and len(altitude_rational) == 2:
+                                altitude = altitude_rational[0] / altitude_rational[1]
+                            else:
+                                altitude = float(altitude_rational)
+                            
+                            # Apply altitude reference (0 = above sea level, 1 = below sea level)
+                            if altitude_ref == 1:
+                                altitude *= -1
+                            
+                            result['altitude'] = altitude
+                        except (ValueError, ZeroDivisionError, TypeError) as e:
+                            logging.debug(f"Could not parse altitude from {image_path}: {e}")
                     
                     # Transform to UTM if enabled
                     if config.SHOW_UTM_COORDINATES:
