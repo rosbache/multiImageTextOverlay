@@ -17,7 +17,7 @@ def create_overlay_text(metadata: dict) -> str:
     Create formatted text string from metadata.
     
     Args:
-        metadata: Dictionary with 'datetime' and 'location' keys
+        metadata: Dictionary with 'datetime', 'location', and optionally 'location_utm' keys
         
     Returns:
         Formatted text string for overlay
@@ -31,6 +31,10 @@ def create_overlay_text(metadata: dict) -> str:
     
     if metadata['location']:
         lines.append(f"Location: {metadata['location']}")
+    
+    # Add UTM coordinates if available
+    if metadata.get('location_utm'):
+        lines.append(f"         {metadata['location_utm']}")
     
     return '\n'.join(lines) if lines else "No metadata available"
 
