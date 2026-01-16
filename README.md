@@ -148,8 +148,11 @@ Date: 2024-08-15 14:30:22
 Location: 40°42'46"N, 74°0'21"W
 UTM 32N: 123456.78E, 987654.32N
 ```
+<img width="344" height="60" alt="image" src="https://github.com/user-attachments/assets/24aea6f3-dd10-42ec-88d3-94d6bc6ec492" />
+
 
 If an image has no metadata, it will display: "No metadata available"
+<img width="182" height="22" alt="image" src="https://github.com/user-attachments/assets/35d27b54-1ed4-4f12-9df2-aa91b9ada588" />
 
 ### Coordinate System Conversion
 
