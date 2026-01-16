@@ -6,7 +6,12 @@ Extracts DateTime and GPS location data from JPG image EXIF metadata.
 
 import piexif
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
+from pyproj import Transformer
+import config
+
+# Cache for coordinate transformers (one per process)
+_transformer_cache: Dict[int, Transformer] = {}
 
 
 def rational_to_decimal(rational: Tuple[Tuple[int, int], ...]) -> float:
@@ -66,6 +71,61 @@ def decimal_to_dms(decimal: float, is_latitude: bool) -> str:
         direction = 'E' if is_positive else 'W'
     
     return f"{degrees}°{minutes}'{seconds}\"{direction}"
+
+
+def get_transformer(target_epsg: int) -> Transformer:
+    """
+    Get or create a cached coordinate transformer.
+    Uses a cache to avoid recreating transformers for each image.
+    
+    Args:
+        target_epsg: Target EPSG code
+        
+    Returns:
+        Transformer object for WGS84 to target CRS
+    """
+    if target_epsg not in _transformer_cache:
+        _transformer_cache[target_epsg] = Transformer.from_crs(
+            "EPSG:4326",  # WGS84 (GPS standard)
+            f"EPSG:{target_epsg}",
+            always_xy=True  # Ensure longitude, latitude order
+        )
+        logging.debug(f"Created transformer for EPSG:{target_epsg}")
+    return _transformer_cache[target_epsg]
+
+
+def transform_to_utm(lat_decimal: float, lon_decimal: float, target_epsg: int) -> Tuple[float, float]:
+    """
+    Transform WGS84 coordinates to target coordinate system.
+    
+    Args:
+        lat_decimal: Latitude in decimal degrees (WGS84)
+        lon_decimal: Longitude in decimal degrees (WGS84)
+        target_epsg: Target EPSG code
+        
+    Returns:
+        Tuple of (easting, northing) in target coordinate system
+    """
+    transformer = get_transformer(target_epsg)
+    # Transform: lon, lat (X, Y) -> easting, northing
+    easting, northing = transformer.transform(lon_decimal, lat_decimal)
+    return easting, northing
+
+
+def format_utm_coordinates(easting: float, northing: float, zone: int, hemisphere: str) -> str:
+    """
+    Format UTM coordinates for display.
+    
+    Args:
+        easting: UTM easting coordinate
+        northing: UTM northing coordinate
+        zone: UTM zone number
+        hemisphere: 'N' or 'S'
+        
+    Returns:
+        Formatted UTM coordinate string
+    """
+    return f"UTM {zone}{hemisphere}: {easting:.2f}E, {northing:.2f}N"
 
 
 def extract_exif_data(image_path: str) -> dict:
@@ -143,6 +203,19 @@ def extract_exif_data(image_path: str) -> dict:
                     lat_str = decimal_to_dms(lat_decimal, is_latitude=True)
                     lon_str = decimal_to_dms(lon_decimal, is_latitude=False)
                     result['location'] = f"{lat_str}, {lon_str}"
+                    
+                    # Transform to UTM if enabled
+                    if config.SHOW_UTM_COORDINATES:
+                        try:
+                            easting, northing = transform_to_utm(
+                                lat_decimal, lon_decimal, config.TARGET_EPSG
+                            )
+                            result['location_utm'] = format_utm_coordinates(
+                                easting, northing, config.UTM_ZONE, config.UTM_HEMISPHERE
+                            )
+                        except Exception as e:
+                            logging.warning(f"Failed to transform coordinates for {image_path}: {e}")
+                            result['location_utm'] = None
                     
                 except ValueError as e:
                     logging.warning(f"Invalid GPS data in {image_path}: {e}")
