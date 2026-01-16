@@ -29,6 +29,12 @@ PADDING = 20                   # Pixels from edge of image
 # Output settings
 OUTPUT_QUALITY = 95            # JPEG quality (1-100, higher is better)
 
+# Coordinate system settings
+SHOW_UTM_COORDINATES = True    # Show UTM coordinates in addition to WGS84
+TARGET_EPSG = 25832            # Target EPSG code (default: UTM Zone 32N)
+UTM_ZONE = 32                  # UTM zone number for display
+UTM_HEMISPHERE = 'N'           # UTM hemisphere ('N' or 'S')
+
 # Processing settings
 MAX_WORKERS = 6                # Maximum number of parallel workers for multiprocessing
 
@@ -80,5 +86,18 @@ def validate_config():
     valid_modes = ['overwrite', 'skip', 'rename']
     if FILE_COLLISION_MODE not in valid_modes:
         raise ValueError(f"FILE_COLLISION_MODE must be one of: {', '.join(valid_modes)}")
+    
+    # Validate coordinate system settings
+    if not isinstance(SHOW_UTM_COORDINATES, bool):
+        raise ValueError("SHOW_UTM_COORDINATES must be a boolean")
+    
+    if not isinstance(TARGET_EPSG, int) or TARGET_EPSG < 1000 or TARGET_EPSG > 99999:
+        raise ValueError("TARGET_EPSG must be an integer between 1000 and 99999")
+    
+    if not isinstance(UTM_ZONE, int) or UTM_ZONE < 1 or UTM_ZONE > 60:
+        raise ValueError("UTM_ZONE must be an integer between 1 and 60")
+    
+    if UTM_HEMISPHERE not in ['N', 'S']:
+        raise ValueError("UTM_HEMISPHERE must be 'N' or 'S'")
     
     return True
