@@ -8,20 +8,26 @@ A Python tool that reads JPG images, extracts EXIF metadata (date, time, GPS loc
 - 🕒 Displays date and time from image metadata
 - 📍 Shows GPS location in human-readable format (e.g., 40°42'46"N, 74°0'21"W)
 - 🎨 Customizable text appearance (color, size, position)
-- ✨ Text outline for better visibility
-- 🔄 Batch processing of multiple images
+- ✨ Text outline for better visibility using native Pillow stroke API
+- 🔄 Batch processing with multiprocessing (up to 6 workers by default)
+- 🛡️ Preserves original EXIF metadata in output files
+- 💾 Smart file collision handling (rename, skip, or overwrite)
+- 📊 Progress bars for batch operations
+- 📝 Comprehensive logging with file output support
+- 🎯 Command-line interface with extensive options
+- ✅ Dry-run mode for preview without processing
 
 ## Project Structure
 
 ```
-mc_image_overlay/
+multiImageTextOverlay/
 ├── main.py              # Entry point - run this to process images
 ├── image_processor.py   # Core image processing and overlay logic
 ├── exif_handler.py      # EXIF metadata extraction utilities
-├── config.py            # User-configurable settings
+├── config.py            # User-configurable settings with validation
 ├── requirements.txt     # Python dependencies
-├── input/               # Place your JPG images here
-├── output/              # Processed images will be saved here
+├── input/               # Place your JPG images here (configurable)
+├── output/              # Processed images will be saved here (configurable)
 └── fonts/               # TrueType font files
     └── arial.ttf        # Default font (you need to add this)
 ```
@@ -42,33 +48,78 @@ mc_image_overlay/
 
 ## Usage
 
+### Basic Usage
+
 1. **Add JPG images to the `input/` folder**
 
-2. **Configure settings in `config.py` (optional):**
-   ```python
-   TEXT_COLOR = (255, 255, 255)     # RGB - White
-   FONT_SIZE = 24                    # Font size
-   TEXT_POSITION = 'bottom-left'     # Text position
-   ```
-
-3. **Run the script:**
+2. **Run the script:**
    ```bash
    python main.py
    ```
 
-4. **Find processed images in the `output/` folder**
+3. **Find processed images in the `output/` folder**
+
+### Command-Line Options
+
+```bash
+# Process with default settings
+python main.py
+
+# Specify custom input/output directories
+python main.py --input photos --output processed
+
+# Customize text appearance
+python main.py --position top-right --color 255 0 0 --font-size 72
+
+# Control processing
+python main.py --workers 4 --collision skip
+
+# Enable verbose logging
+python main.py --verbose
+
+# Save logs to file
+python main.py --log-file process.log
+
+# Preview without processing
+python main.py --dry-run
+
+# Combine options
+python main.py -i photos -o processed -p top-right -c 255 255 0 -s 60 -v
+```
+
+### Available Options
+
+```
+-h, --help              Show help message and exit
+-i, --input DIR         Input directory containing images (default: input)
+-o, --output DIR        Output directory for processed images (default: output)
+-p, --position POS      Text position: top-left, top-right, bottom-left, bottom-right
+-c, --color R G B       Text color as RGB values 0-255
+-s, --font-size SIZE    Font size in points
+-q, --quality QUALITY   Output JPEG quality 1-100
+-w, --workers N         Maximum number of parallel workers (max 6)
+--collision MODE        File collision handling: overwrite, skip, rename
+--dry-run               Preview files without processing
+-v, --verbose           Enable debug logging
+--quiet                 Suppress console output except errors
+--log-file FILE         Save logs to specified file
+```
 
 ## Configuration Options
 
-Edit `config.py` to customize the overlay appearance:
+Edit `config.py` to customize default settings:
+
+### Directory Settings
+- `INPUT_DIR`: Default input directory (default: "input")
+- `OUTPUT_DIR`: Default output directory (default: "output")
 
 ### Text Appearance
-- `TEXT_COLOR`: RGB tuple for text color (default: white)
-- `OUTLINE_COLOR`: RGB tuple for outline color (default: black)
+- `TEXT_COLOR`: RGB tuple for text color (default: (255, 255, 255) - white)
+- `OUTLINE_COLOR`: RGB tuple for outline color (default: (0, 0, 0) - black)
 - `OUTLINE_WIDTH`: Outline thickness in pixels (default: 2)
 
 ### Font Settings
-- `FONT_SIZE`: Font size in points (default: 24)
+- `FONT_SIZE`: Font size in points (default: 96)
 - `FONT_PATH`: Path to TrueType font file (default: "fonts/arial.ttf")
 
 ### Text Positioning
@@ -77,6 +128,10 @@ Edit `config.py` to customize the overlay appearance:
 
 ### Output Settings
 - `OUTPUT_QUALITY`: JPEG quality 1-100 (default: 95)
+
+### Processing Settings
+- `MAX_WORKERS`: Maximum number of parallel workers (default: 6)
+- `FILE_COLLISION_MODE`: How to handle existing files - 'overwrite', 'skip', 'rename' (default: 'rename')
 
 ## Example Output
 
@@ -90,14 +145,44 @@ If an image has no metadata, it will display: "No metadata available"
 
 ## Dependencies
 
-- **Pillow (PIL)**: Image processing and text rendering
-- **piexif**: EXIF metadata extraction
+- **Pillow (PIL) >= 10.0.0**: Image processing and text rendering
+- **piexif >= 1.1.3**: EXIF metadata extraction
+- **tqdm >= 4.65.0**: Progress bars for batch processing
+
+## Advanced Features
+
+### Multiprocessing
+The tool automatically uses up to 6 CPU cores for parallel processing of images, significantly speeding up batch operations. You can adjust this with the `--workers` option.
+
+### EXIF Preservation
+Original EXIF metadata is preserved in processed images, including camera settings, GPS data, and timestamps.
+
+### File Collision Handling
+- **rename** (default): Adds a counter suffix to avoid overwriting (e.g., image_1.jpg, image_2.jpg)
+- **skip**: Skips processing if output file already exists
+- **overwrite**: Replaces existing files
+
+### Logging
+- Console logging with INFO level by default
+- `--verbose` enables DEBUG level logging with timestamps
+- `--quiet` suppresses all output except errors
+- `--log-file` saves complete logs to a file for review
+
+### Error Handling
+Robust error handling with specific exception catching for:
+- Invalid image files
+- Corrupted EXIF data
+- Missing fonts
+- File I/O errors
+- Invalid GPS coordinates
 
 ## Notes
 
 - Only JPG/JPEG images are currently supported
 - Images without EXIF data will still be processed but show "No metadata available"
 - GPS coordinates are displayed in degrees, minutes, seconds format
+- Configuration is validated at startup to catch errors early
+- Font fallback mechanism tries multiple system fonts if custom font fails
 - Original images in the `input/` folder are not modified
 
 ## License
