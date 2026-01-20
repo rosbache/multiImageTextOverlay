@@ -73,6 +73,41 @@ def decimal_to_dms(decimal: float, is_latitude: bool) -> str:
     return f"{degrees}°{minutes}'{seconds}\"{direction}"
 
 
+def degrees_to_cardinal(degrees: float, precision: int = 8) -> str:
+    """
+    Convert degrees (0-360) to cardinal/intercardinal direction.
+    
+    Args:
+        degrees: Direction in degrees (0-360, where 0/360 is North)
+        precision: Number of direction sectors (8 or 16)
+                   8 = N, NE, E, SE, S, SW, W, NW
+                   16 = N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW
+        
+    Returns:
+        Cardinal/intercardinal direction string
+    """
+    # Normalize degrees to 0-360 range
+    degrees = degrees % 360
+    
+    if precision == 16:
+        # 16-sector compass (22.5° per sector)
+        directions = [
+            'N', 'NNE', 'NE', 'ENE',
+            'E', 'ESE', 'SE', 'SSE',
+            'S', 'SSW', 'SW', 'WSW',
+            'W', 'WNW', 'NW', 'NNW'
+        ]
+        sector_size = 360 / 16
+        index = int((degrees + sector_size / 2) % 360 / sector_size)
+    else:
+        # 8-sector compass (45° per sector) - default
+        directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+        sector_size = 360 / 8
+        index = int((degrees + sector_size / 2) % 360 / sector_size)
+    
+    return directions[index]
+
+
 def get_transformer(target_epsg: int) -> Transformer:
     """
     Get or create a cached coordinate transformer.
@@ -142,12 +177,14 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
         - 'datetime': Date and time string (or None)
         - 'location': Human-readable GPS coordinates (or None)
         - 'altitude': Altitude in meters (or None)
+        - 'direction': Image direction in degrees (or None)
     """
     result = {
         'filename': filename,
         'datetime': None,
         'location': None,
-        'altitude': None
+        'altitude': None,
+        'direction': None
     }
     
     try:
@@ -228,6 +265,25 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
                             result['altitude'] = altitude
                         except (ValueError, ZeroDivisionError, TypeError) as e:
                             logging.debug(f"Could not parse altitude from {image_path}: {e}")
+                    
+                    # Extract GPS image direction if available
+                    if piexif.GPSIFD.GPSImgDirection in gps_data:
+                        try:
+                            direction_rational = gps_data[piexif.GPSIFD.GPSImgDirection]
+                            direction_ref = gps_data.get(piexif.GPSIFD.GPSImgDirectionRef, b'T')
+                            
+                            # Convert rational to float
+                            if isinstance(direction_rational, tuple) and len(direction_rational) == 2:
+                                direction = direction_rational[0] / direction_rational[1]
+                            else:
+                                direction = float(direction_rational)
+                            
+                            # Direction ref can be 'T' (True North) or 'M' (Magnetic North)
+                            # We'll use the value as-is since most devices use True North
+                            result['direction'] = direction
+                            logging.debug(f"Extracted direction: {direction}° from {image_path}")
+                        except (ValueError, ZeroDivisionError, TypeError) as e:
+                            logging.debug(f"Could not parse direction from {image_path}: {e}")
                     
                     # Transform to UTM if enabled
                     if config.SHOW_UTM_COORDINATES:
