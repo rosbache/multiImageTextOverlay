@@ -128,6 +128,32 @@ Examples:
         help='Disable UTM coordinate display (show only WGS84)'
     )
     
+    # Direction options
+    parser.add_argument(
+        '--show-direction',
+        action='store_true',
+        default=None,
+        help='Enable image direction display (degrees and cardinal)'
+    )
+    parser.add_argument(
+        '--no-direction',
+        action='store_true',
+        help='Disable image direction display'
+    )
+    parser.add_argument(
+        '--direction-precision',
+        type=int,
+        choices=[8, 16],
+        help=f'Cardinal direction precision: 8 (N,NE,E...) or 16 (N,NNE,NE...) (default: {config.DIRECTION_PRECISION})'
+    )
+    
+    # Project information
+    parser.add_argument(
+        '--project-info',
+        type=str,
+        help='Project information text to display at top of overlay (e.g., "Project XYZ - Survey 2024")'
+    )
+    
     # Processing options
     parser.add_argument(
         '--workers', '-w',
@@ -186,6 +212,18 @@ def apply_argument_overrides(args):
         config.TARGET_EPSG = args.target_epsg
     if args.no_utm:
         config.SHOW_UTM_COORDINATES = False
+    
+    # Direction settings
+    if args.show_direction:
+        config.SHOW_DIRECTION = True
+    if args.no_direction:
+        config.SHOW_DIRECTION = False
+    if args.direction_precision:
+        config.DIRECTION_PRECISION = args.direction_precision
+    
+    # Project information
+    if args.project_info:
+        config.PROJECT_INFO = args.project_info
     
     # Update file collision mode
     config.FILE_COLLISION_MODE = args.collision
@@ -333,6 +371,11 @@ def main():
         if config.SHOW_UTM_COORDINATES:
             logging.info(f"  Target EPSG: {config.TARGET_EPSG}")
             logging.info(f"  UTM Zone: {config.UTM_ZONE}{config.UTM_HEMISPHERE}")
+        logging.info(f"  Show direction: {config.SHOW_DIRECTION}")
+        if config.SHOW_DIRECTION:
+            logging.info(f"  Direction precision: {config.DIRECTION_PRECISION} sectors")
+        if config.PROJECT_INFO:
+            logging.info(f"  Project info: {config.PROJECT_INFO}")
         logging.info(f"  Max workers: {args.workers}")
         logging.info(f"  Collision mode: {args.collision}")
         return
@@ -345,6 +388,9 @@ def main():
         'OUTPUT_QUALITY': config.OUTPUT_QUALITY,
         'TARGET_EPSG': config.TARGET_EPSG,
         'SHOW_UTM_COORDINATES': config.SHOW_UTM_COORDINATES,
+        'SHOW_DIRECTION': config.SHOW_DIRECTION,
+        'DIRECTION_PRECISION': config.DIRECTION_PRECISION,
+        'PROJECT_INFO': config.PROJECT_INFO,
     }
     process_args = [(jpg_file, output_dir, args.collision, config_dict) for jpg_file in jpg_files]
     
