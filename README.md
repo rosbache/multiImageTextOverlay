@@ -8,6 +8,8 @@ A Python tool that reads JPG images, extracts EXIF metadata (date, time, GPS loc
 - 🕒 Displays date and time from image metadata
 - 📍 Shows GPS location in human-readable format (e.g., 40°42'46"N, 74°0'21"W)
 - 🗺️ Converts GPS coordinates to UTM or other projected coordinate systems
+- 🧭 Displays image direction in degrees with cardinal directions (N, NE, E, SE, S, SW, W, NW)
+- 📋 Optional project information overlay at the top of images
 - 🎨 Customizable text appearance (color, size, position)
 - ✨ Text outline for better visibility using native Pillow stroke API
 - 🔄 Batch processing with multiprocessing (up to 6 workers by default)
@@ -22,9 +24,14 @@ A Python tool that reads JPG images, extracts EXIF metadata (date, time, GPS loc
 
 The overlay will display metadata like:
 ```
+Project XYZ - Survey 2024
+
+image001
 Date: 2024-08-15 14:30:22
 Location: 40°42'46"N, 74°0'21"W
 UTM 32N: 123456.78E, 987654.32N
+Height: 125.3 m
+Direction: 45° (NE)
 ```
 <img width="344" height="60" alt="image" src="https://github.com/user-attachments/assets/24aea6f3-dd10-42ec-88d3-94d6bc6ec492" />
 
@@ -90,6 +97,15 @@ python main.py --position top-right --color 255 0 0 --font-size 72
 # Control processing
 python main.py --workers 4 --collision skip
 
+# Add project information
+python main.py --project-info "Highway Survey 2026 - Phase 1"
+
+# Use 16-sector compass for more precise directions
+python main.py --direction-precision 16
+
+# Disable direction display
+python main.py --no-direction
+
 # Enable verbose logging
 python main.py --verbose
 
@@ -100,25 +116,31 @@ python main.py --log-file process.log
 python main.py --dry-run
 
 # Combine options
-python main.py -i photos -o processed -p top-right -c 255 255 0 -s 60 -v
+python main.py -i photos -o processed -p top-right -c 255 255 0 -s 60 --project-info "Survey 2026" -v
 ```
 
 ### Available Options
 
 ```
--h, --help              Show help message and exit
--i, --input DIR         Input directory containing images (default: input)
--o, --output DIR        Output directory for processed images (default: output)
--p, --position POS      Text position: top-left, top-right, bottom-left, bottom-right
--c, --color R G B       Text color as RGB values 0-255
--s, --font-size SIZE    Font size in points
--q, --quality QUALITY   Output JPEG quality 1-100
--w, --workers N         Maximum number of parallel workers (max 6)
---collision MODE        File collision handling: overwrite, skip, rename
---dry-run               Preview files without processing
--v, --verbose           Enable debug logging
---quiet                 Suppress console output except errors
---log-file FILE         Save logs to specified file
+-h, --help                    Show help message and exit
+-i, --input DIR               Input directory containing images (default: input)
+-o, --output DIR              Output directory for processed images (default: output)
+-p, --position POS            Text position: top-left, top-right, bottom-left, bottom-right
+-c, --color R G B             Text color as RGB values 0-255
+-s, --font-size SIZE          Font size in points
+-q, --quality QUALITY         Output JPEG quality 1-100
+--target-epsg EPSG            Target EPSG code for coordinate transformation
+--no-utm                      Disable UTM coordinate display
+--show-direction              Enable image direction display
+--no-direction                Disable image direction display
+--direction-precision {8,16}  Cardinal direction precision (8 or 16 sectors)
+--project-info TEXT           Project information text displayed at top
+-w, --workers N               Maximum number of parallel workers (max 6)
+--collision MODE              File collision handling: overwrite, skip, rename
+--dry-run                     Preview files without processing
+-v, --verbose                 Enable debug logging
+--quiet                       Suppress console output except errors
+--log-file FILE               Save logs to specified file
 ```
 
 ## Configuration Options
@@ -151,6 +173,16 @@ Edit `config.py` to customize default settings:
 - `UTM_ZONE`: UTM zone number for display (default: 32)
 - `UTM_HEMISPHERE`: UTM hemisphere, 'N' or 'S' (default: 'N')
 
+### Direction Settings
+- `SHOW_DIRECTION`: Enable/disable image direction display from GPS data (default: True)
+- `DIRECTION_PRECISION`: Cardinal direction precision - 8 or 16 sectors (default: 8)
+  - 8 sectors: N, NE, E, SE, S, SW, W, NW (45° increments)
+  - 16 sectors: N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW (22.5° increments)
+
+### Project Information
+- `PROJECT_INFO`: Optional text displayed at the top of the overlay (default: None)
+  - Example: "Highway Survey 2026 - Phase 1" or "Bridge Inspection Q1"
+
 ### Processing Settings
 - `MAX_WORKERS`: Maximum number of parallel workers (default: 6)
 - `FILE_COLLISION_MODE`: How to handle existing files - 'overwrite', 'skip', 'rename' (default: 'rename')
@@ -175,6 +207,20 @@ The coordinate conversion uses the **pyproj** library, which provides accurate t
 - **pyproj >= 3.0.0**: Coordinate system transformations (WGS84 to UTM/other CRS)
 
 ## Advanced Features
+
+### Image Direction
+The tool extracts GPS image direction (bearing) from EXIF data when available:
+- **Automatic extraction**: Reads `GPSImgDirection` from EXIF metadata
+- **Degree display**: Shows precise bearing (0-360°)
+- **Cardinal conversion**: Converts to human-readable directions (N, NE, E, etc.)
+- **Configurable precision**: Choose 8-sector or 16-sector compass
+- **Graceful fallback**: Shows "Direction: N/A" when GPS direction is unavailable
+
+### Project Information
+Add custom project information that appears at the top of every processed image:
+- **Flexible text**: Any descriptive text (project name, survey ID, date, etc.)
+- **Consistent branding**: Apply the same header to all images in a batch
+- **Command-line or config**: Set via `--project-info` flag or `PROJECT_INFO` in config.py
 
 ### Multiprocessing
 The tool automatically uses up to 6 CPU cores for parallel processing of images, significantly speeding up batch operations. You can adjust this with the `--workers` option.
@@ -206,6 +252,9 @@ Robust error handling with specific exception catching for:
 - Only JPG/JPEG images are currently supported
 - Images without EXIF data will still be processed but show "No metadata available"
 - GPS coordinates are displayed in degrees, minutes, seconds format
+- Image direction is only shown if GPS direction data (`GPSImgDirection`) is available in EXIF
+  - Most modern smartphones and drones with GPS+compass record this data
+  - Images without direction data will show "Direction: N/A" if direction display is enabled
 - Configuration is validated at startup to catch errors early
 - Font fallback mechanism tries multiple system fonts if custom font fails
 - Original images in the `input/` folder are not modified
