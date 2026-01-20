@@ -35,6 +35,13 @@ TARGET_EPSG = 25832            # Target EPSG code (default: UTM Zone 32N)
 UTM_ZONE = 32                  # UTM zone number for display
 UTM_HEMISPHERE = 'N'           # UTM hemisphere ('N' or 'S')
 
+# Direction settings
+SHOW_DIRECTION = True          # Show image direction (from GPS)
+DIRECTION_PRECISION = 8        # Cardinal direction precision (8 or 16 sectors)
+
+# Project information
+PROJECT_INFO = None            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
+
 # Processing settings
 MAX_WORKERS = 6                # Maximum number of parallel workers for multiprocessing
 
@@ -99,5 +106,16 @@ def validate_config():
     
     if UTM_HEMISPHERE not in ['N', 'S']:
         raise ValueError("UTM_HEMISPHERE must be 'N' or 'S'")
+    
+    # Validate direction settings
+    if not isinstance(SHOW_DIRECTION, bool):
+        raise ValueError("SHOW_DIRECTION must be a boolean")
+    
+    if DIRECTION_PRECISION not in [8, 16]:
+        raise ValueError("DIRECTION_PRECISION must be 8 or 16")
+    
+    # Validate project info
+    if PROJECT_INFO is not None and not isinstance(PROJECT_INFO, str):
+        raise ValueError("PROJECT_INFO must be a string or None")
     
     return True
