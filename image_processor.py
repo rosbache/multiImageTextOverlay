@@ -17,14 +17,20 @@ def create_overlay_text(metadata: dict) -> str:
     Create formatted text string from metadata.
     
     Args:
-        metadata: Dictionary with 'filename', 'datetime', 'location', 'altitude', and optionally 'location_utm' keys
+        metadata: Dictionary with 'filename', 'datetime', 'location', 'altitude', 'direction', 
+                  'direction_cardinal', 'project_info', and optionally 'location_utm' keys
         
     Returns:
         Formatted text string for overlay
     """
     lines = []
     
-    # Add filename first (if available)
+    # Add project info at the top (if available)
+    if metadata.get('project_info'):
+        lines.append(metadata['project_info'])
+        lines.append('')  # Add blank line separator
+    
+    # Add filename (if available)
     if metadata.get('filename'):
         lines.append(metadata['filename'])
     
@@ -44,8 +50,21 @@ def create_overlay_text(metadata: dict) -> str:
     if metadata.get('altitude') is not None:
         lines.append(f"Height: {metadata['altitude']:.1f} m")
     
-    # If only filename exists, add "No metadata available"
-    if lines and len(lines) == 1 and metadata.get('filename'):
+    # Add direction if available or show N/A
+    if metadata.get('show_direction'):
+        if metadata.get('direction') is not None and metadata.get('direction_cardinal'):
+            lines.append(f"Direction: {metadata['direction']:.0f}° ({metadata['direction_cardinal']})")
+        else:
+            lines.append("Direction: N/A")
+    
+    # If only filename/project exists, add "No metadata available"
+    metadata_exists = any([
+        metadata.get('datetime'),
+        metadata.get('location'),
+        metadata.get('altitude') is not None,
+        metadata.get('direction') is not None
+    ])
+    if not metadata_exists and (metadata.get('filename') or metadata.get('project_info')):
         lines.append("No metadata available")
     
     return '\n'.join(lines) if lines else "No metadata available"
@@ -107,6 +126,21 @@ def process_image(input_path: str, output_path: str) -> bool:
         
         # Extract EXIF metadata
         metadata = extract_exif_data(input_path, filename=filename_base)
+        
+        # Add project info if configured
+        if config.PROJECT_INFO:
+            metadata['project_info'] = config.PROJECT_INFO
+        
+        # Add direction display flag
+        metadata['show_direction'] = config.SHOW_DIRECTION
+        
+        # Convert direction to cardinal if available and enabled
+        if config.SHOW_DIRECTION and metadata.get('direction') is not None:
+            from exif_handler import degrees_to_cardinal
+            metadata['direction_cardinal'] = degrees_to_cardinal(
+                metadata['direction'], 
+                config.DIRECTION_PRECISION
+            )
         
         # Open and verify image
         try:
