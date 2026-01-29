@@ -14,7 +14,7 @@ INPUT_DIR = "input"           # Default input directory
 OUTPUT_DIR = "output"         # Default output directory
 
 # Text appearance
-TEXT_COLOR = (255, 255, 255)  # RGB tuple - White
+TEXT_COLOR = (255, 0, 0)  # RGB tuple - Red
 OUTLINE_COLOR = (0, 0, 0)     # RGB tuple - Black outline for visibility
 OUTLINE_WIDTH = 2             # Pixels for text outline
 
