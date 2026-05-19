@@ -15,6 +15,7 @@ from typing import List, Tuple
 from tqdm import tqdm
 import config
 from image_processor import process_image
+from exif_handler import extract_exif_data, reverse_geocode
 
 
 # Configure logging
@@ -140,6 +141,14 @@ Examples:
         action='store_true',
         help='Disable image direction display'
     )
+
+    # Address options
+    parser.add_argument(
+        '--no-address',
+        action='store_true',
+        help='Disable nearest address lookup from GPS coordinates'
+    )
+
     parser.add_argument(
         '--direction-precision',
         type=int,
@@ -220,6 +229,10 @@ def apply_argument_overrides(args):
         config.SHOW_DIRECTION = False
     if args.direction_precision:
         config.DIRECTION_PRECISION = args.direction_precision
+
+    # Address settings
+    if args.no_address:
+        config.SHOW_ADDRESS = False
     
     # Project information
     if args.project_info:
@@ -254,17 +267,17 @@ def get_unique_output_path(output_path: Path) -> Path:
         counter += 1
 
 
-def process_single_image(args_tuple: Tuple[Path, Path, str, dict]) -> Tuple[bool, str, str]:
+def process_single_image(args_tuple: Tuple[Path, Path, str, dict, object]) -> Tuple[bool, str, str]:
     """
     Wrapper function for processing a single image (for multiprocessing).
     
     Args:
-        args_tuple: Tuple of (input_path, output_dir, collision_mode, config_dict)
+        args_tuple: Tuple of (input_path, output_dir, collision_mode, config_dict, address)
         
     Returns:
         Tuple of (success, input_filename, message)
     """
-    input_path, output_dir, collision_mode, config_dict = args_tuple
+    input_path, output_dir, collision_mode, config_dict, address = args_tuple
     
     # Apply config overrides in worker process
     import config
@@ -283,7 +296,7 @@ def process_single_image(args_tuple: Tuple[Path, Path, str, dict]) -> Tuple[bool
             logging.debug(f"Renamed output to: {output_path.name}")
     
     # Process the image
-    success = process_image(str(input_path), str(output_path))
+    success = process_image(str(input_path), str(output_path), address=address)
     
     if success:
         return True, input_path.name, "processed successfully"
@@ -391,8 +404,32 @@ def main():
         'SHOW_DIRECTION': config.SHOW_DIRECTION,
         'DIRECTION_PRECISION': config.DIRECTION_PRECISION,
         'PROJECT_INFO': config.PROJECT_INFO,
+        'SHOW_ADDRESS': config.SHOW_ADDRESS,
     }
-    process_args = [(jpg_file, output_dir, args.collision, config_dict) for jpg_file in jpg_files]
+
+    # Pre-geocode coordinates in the main process to share cache across all images
+    address_map: dict = {}
+    if config.SHOW_ADDRESS:
+        logging.info("Looking up addresses for GPS coordinates...")
+        for jpg_file in jpg_files:
+            try:
+                meta = extract_exif_data(str(jpg_file), filename=jpg_file.stem)
+                lat = meta.get('_lat_decimal')
+                lon = meta.get('_lon_decimal')
+                if lat is not None and lon is not None:
+                    address_map[jpg_file.name] = reverse_geocode(
+                        lat, lon, timeout=config.GEOCODER_TIMEOUT
+                    )
+                else:
+                    address_map[jpg_file.name] = None
+            except Exception as e:
+                logging.warning(f"Could not get address for {jpg_file.name}: {e}")
+                address_map[jpg_file.name] = None
+
+    process_args = [
+        (jpg_file, output_dir, args.collision, config_dict, address_map.get(jpg_file.name))
+        for jpg_file in jpg_files
+    ]
     
     # Process images with multiprocessing
     success_count = 0
