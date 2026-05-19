@@ -10,21 +10,23 @@ from pathlib import Path
 import sys
 
 # Directory settings
-INPUT_DIR = "input"           # Default input directory
-OUTPUT_DIR = "output"         # Default output directory
+INPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\kabeltrase"
+OUTPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\kabeltrase\processed"
+# INPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\arbion hønefoss"           # Default input directory
+# OUTPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\arbion hønefoss\processed"         # Default output directory
 
 # Text appearance
-TEXT_COLOR = (255, 0, 0)  # RGB tuple - Red
+TEXT_COLOR = (255, 255, 255)  # RGB tuple - White
 OUTLINE_COLOR = (0, 0, 0)     # RGB tuple - Black outline for visibility
 OUTLINE_WIDTH = 2             # Pixels for text outline
 
 # Font settings
-FONT_SIZE = 96                # Font size in points
+FONT_SIZE = 128                # Font size in points
 FONT_PATH = "fonts/arial.ttf" # Path to TrueType font file
 
 # Text positioning
 TEXT_POSITION = 'bottom-left'  # Options: 'top-left', 'top-right', 'bottom-left', 'bottom-right'
-PADDING = 20                   # Pixels from edge of image
+PADDING = 30                   # Pixels from edge of image
 
 # Output settings
 OUTPUT_QUALITY = 95            # JPEG quality (1-100, higher is better)
@@ -40,13 +42,18 @@ SHOW_DIRECTION = True          # Show image direction (from GPS)
 DIRECTION_PRECISION = 8        # Cardinal direction precision (8 or 16 sectors)
 
 # Project information
-PROJECT_INFO = None            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
+PROJECT_INFO = "22kV Kabeltrase Ringerike"            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
+# PROJECT_INFO = "Arbion Hønefoss"            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
 
 # Processing settings
-MAX_WORKERS = 6                # Maximum number of parallel workers for multiprocessing
+MAX_WORKERS = 4                # Maximum number of parallel workers for multiprocessing
 
 # Output safety settings
-FILE_COLLISION_MODE = 'rename' # Options: 'overwrite', 'skip', 'rename'
+FILE_COLLISION_MODE = 'overwrite' # Options: 'overwrite', 'skip', 'rename'
+
+# Address settings
+SHOW_ADDRESS = True            # Show nearest address (street + city) from GPS coordinates
+GEOCODER_TIMEOUT = 5           # Timeout in seconds for geocoding requests
 
 
 def validate_config():
