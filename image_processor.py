@@ -49,7 +49,11 @@ def create_overlay_text(metadata: dict) -> str:
     # Add altitude/height if available
     if metadata.get('altitude') is not None:
         lines.append(f"Height: {metadata['altitude']:.1f} m")
-    
+
+    # Add address if available
+    if config.SHOW_ADDRESS and metadata.get('address'):
+        lines.append(f"Address: {metadata['address']}")
+
     # Add direction if available or show N/A
     if metadata.get('show_direction'):
         if metadata.get('direction') is not None and metadata.get('direction_cardinal'):
@@ -109,13 +113,14 @@ def load_font_with_fallback() -> ImageFont.FreeTypeFont:
             return ImageFont.load_default()
 
 
-def process_image(input_path: str, output_path: str) -> bool:
+def process_image(input_path: str, output_path: str, address: str = None) -> bool:
     """
     Process a single image by adding metadata overlay.
     
     Args:
         input_path: Path to source JPG image
         output_path: Path to save processed image
+        address: Pre-computed address string from geocoding (or None)
         
     Returns:
         True if successful, False otherwise
@@ -126,7 +131,11 @@ def process_image(input_path: str, output_path: str) -> bool:
         
         # Extract EXIF metadata
         metadata = extract_exif_data(input_path, filename=filename_base)
-        
+
+        # Inject pre-computed address if provided
+        if address is not None:
+            metadata['address'] = address
+
         # Add project info if configured
         if config.PROJECT_INFO:
             metadata['project_info'] = config.PROJECT_INFO
