@@ -4,6 +4,7 @@ EXIF Metadata Extraction Module
 Extracts DateTime and GPS location data from JPG image EXIF metadata.
 """
 
+import time
 import piexif
 import logging
 from typing import Optional, Tuple, Dict
@@ -12,6 +13,75 @@ import config
 
 # Cache for coordinate transformers (one per process)
 _transformer_cache: Dict[int, Transformer] = {}
+
+# Cache for geocoding results (avoids duplicate requests for the same coordinates)
+_geocode_cache: Dict[Tuple[float, float], Optional[str]] = {}
+_last_geocode_time: float = 0.0
+_nominatim_geocoder = None
+
+
+def _get_geocoder():
+    """Get or create a cached Nominatim geocoder instance."""
+    global _nominatim_geocoder
+    if _nominatim_geocoder is None:
+        from geopy.geocoders import Nominatim
+        _nominatim_geocoder = Nominatim(user_agent="multiImageTextOverlay")
+    return _nominatim_geocoder
+
+
+def reverse_geocode(lat: float, lon: float, timeout: int = 5) -> Optional[str]:
+    """
+    Reverse geocode coordinates to a street + city address string.
+    Uses an in-memory cache and respects Nominatim's 1 req/sec rate limit.
+
+    Args:
+        lat: Latitude in decimal degrees
+        lon: Longitude in decimal degrees
+        timeout: Request timeout in seconds
+
+    Returns:
+        Address string ("Street N, City") or None if geocoding fails
+    """
+    global _last_geocode_time
+
+    key = (round(lat, 5), round(lon, 5))
+    if key in _geocode_cache:
+        logging.debug(f"Geocode cache hit for {key}")
+        return _geocode_cache[key]
+
+    # Rate limit: 1 request per second (Nominatim usage policy)
+    elapsed = time.time() - _last_geocode_time
+    if elapsed < 1.0:
+        time.sleep(1.0 - elapsed)
+
+    try:
+        geocoder = _get_geocoder()
+        location = geocoder.reverse((lat, lon), timeout=timeout)
+        _last_geocode_time = time.time()
+
+        address = None
+        if location:
+            raw = location.raw.get('address', {})
+            road = (raw.get('road') or raw.get('pedestrian') or
+                    raw.get('path') or raw.get('cycleway') or raw.get('footway'))
+            house_number = raw.get('house_number', '')
+            city = (raw.get('city') or raw.get('town') or
+                    raw.get('village') or raw.get('municipality') or raw.get('county'))
+            parts = []
+            if road:
+                parts.append(f"{road} {house_number}".strip() if house_number else road)
+            if city:
+                parts.append(city)
+            address = ', '.join(parts) if parts else None
+
+        _geocode_cache[key] = address
+        logging.debug(f"Geocoded ({lat:.5f}, {lon:.5f}) -> {address}")
+        return address
+
+    except Exception as e:
+        logging.warning(f"Geocoding failed for ({lat:.5f}, {lon:.5f}): {e}")
+        _geocode_cache[key] = None
+        return None
 
 
 def rational_to_decimal(rational: Tuple[Tuple[int, int], ...]) -> float:
@@ -184,7 +254,9 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
         'datetime': None,
         'location': None,
         'altitude': None,
-        'direction': None
+        'direction': None,
+        '_lat_decimal': None,
+        '_lon_decimal': None,
     }
     
     try:
@@ -245,6 +317,8 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
                     lat_str = decimal_to_dms(lat_decimal, is_latitude=True)
                     lon_str = decimal_to_dms(lon_decimal, is_latitude=False)
                     result['location'] = f"{lat_str}, {lon_str}"
+                    result['_lat_decimal'] = lat_decimal
+                    result['_lon_decimal'] = lon_decimal
                     
                     # Extract GPS altitude if available
                     if piexif.GPSIFD.GPSAltitude in gps_data:
