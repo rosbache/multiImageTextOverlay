@@ -4,7 +4,7 @@ Image Processing Module
 Handles image reading, text overlay creation, and saving processed images.
 """
 
-from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from pathlib import Path
 import logging
 import piexif
@@ -156,6 +156,7 @@ def process_image(input_path: str, output_path: str, address: str = None) -> boo
             image = Image.open(input_path)
             image.verify()  # Verify image integrity
             image = Image.open(input_path)  # Reload after verify
+            image = ImageOps.exif_transpose(image)  # Apply EXIF orientation so portrait images are upright
         except UnidentifiedImageError as e:
             logging.error(f"Cannot identify image file {input_path}: {e}")
             return False
@@ -166,6 +167,9 @@ def process_image(input_path: str, output_path: str, address: str = None) -> boo
         # Preserve original EXIF data
         try:
             original_exif = piexif.load(input_path)
+            # Reset orientation to 1 (normal) since pixels are now correctly rotated
+            if piexif.ImageIFD.Orientation in original_exif.get('0th', {}):
+                original_exif['0th'][piexif.ImageIFD.Orientation] = 1
             exif_bytes = piexif.dump(original_exif)
         except Exception as e:
             logging.warning(f"Could not load EXIF for preservation: {e}")
