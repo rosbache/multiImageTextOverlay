@@ -9,6 +9,7 @@ A Python tool that reads JPG images, extracts EXIF metadata (date, time, GPS loc
 - 📍 Shows GPS location in human-readable format (e.g., 40°42'46"N, 74°0'21"W)
 - 🗺️ Converts GPS coordinates to UTM or other projected coordinate systems
 - 🧭 Displays image direction in degrees with cardinal directions (N, NE, E, SE, S, SW, W, NW)
+- 🏠 Reverse geocoding — looks up the nearest street address from GPS coordinates
 - 📋 Optional project information overlay at the top of images
 - 🎨 Customizable text appearance (color, size, position)
 - ✨ Text outline for better visibility using native Pillow stroke API
@@ -17,6 +18,7 @@ A Python tool that reads JPG images, extracts EXIF metadata (date, time, GPS loc
 - 💾 Smart file collision handling (rename, skip, or overwrite)
 - 📊 Progress bars for batch operations
 - 📝 Comprehensive logging with file output support
+- 🌐 Browser-based web UI (FastAPI) with live preview
 - 🎯 Command-line interface with extensive options
 - ✅ Dry-run mode for preview without processing
 
@@ -44,11 +46,14 @@ If an image has no metadata, it will display: "No metadata available"
 
 ```
 multiImageTextOverlay/
-├── main.py              # Entry point - run this to process images
+├── main.py              # CLI entry point
+├── web_app.py           # FastAPI web UI entry point
 ├── image_processor.py   # Core image processing and overlay logic
-├── exif_handler.py      # EXIF metadata extraction utilities
+├── exif_handler.py      # EXIF metadata extraction and geocoding utilities
 ├── config.py            # User-configurable settings with validation
 ├── requirements.txt     # Python dependencies
+├── templates/
+│   └── index.html       # Web UI (single-page, no build step required)
 ├── input/               # Place your JPG images here (configurable)
 ├── output/              # Processed images will be saved here (configurable)
 └── fonts/               # TrueType font files
@@ -69,18 +74,42 @@ multiImageTextOverlay/
    - Place it in the `fonts/` directory
    - Update `FONT_PATH` in `config.py` to match your font filename
 
+4. **Start the web UI:**
+   ```bash
+   uvicorn web_app:app --host 127.0.0.1 --port 8000
+   ```
+   Then open **http://localhost:8000** in your browser.
+
+   On Windows you can also double-click **`start_web.bat`** — it activates the virtual environment and starts the server automatically.
+
+   > To stop the server press **Ctrl + C** in the terminal.
+
 ## Usage
 
-### Basic Usage
+### Web UI (recommended)
 
-1. **Add JPG images to the `input/` folder**
+Start the local web server:
+```bash
+uvicorn web_app:app --host 127.0.0.1 --port 8000
+```
+Or on Windows, double-click `start_web.bat`.
 
-2. **Run the script:**
-   ```bash
-   python main.py
-   ```
+Then open **http://localhost:8000** in your browser.
 
-3. **Find processed images in the `output/` folder**
+The web interface has three panels:
+
+| Panel | Description |
+|---|---|
+| **Left** | All overlay settings grouped in collapsible sections |
+| **Center** | Live preview — select an image then click *Generate Preview* |
+| **Right** | Scrollable list of loaded images; click to select |
+
+**Loading images:**
+- **Folder tab** — type (or paste) a folder path and click *Load*. The server scans the folder and begins looking up addresses in the background.
+- **Upload tab** — drag-and-drop JPG files onto the drop zone, or click to browse. Files are copied to a temporary folder on the server.
+
+**Processing:**  
+Click *Process All* to batch-process all loaded images. A progress bar and live status message update as each file completes. Output is written to the *Output folder* field (defaults to `<input folder>/processed` if left blank).
 
 ### Command-Line Options
 
@@ -199,12 +228,30 @@ The tool supports automatic conversion of GPS coordinates (WGS84) to UTM or othe
 
 The coordinate conversion uses the **pyproj** library, which provides accurate transformations between different coordinate reference systems based on PROJ definitions.
 
+### Reverse Geocoding (Address Lookup)
+
+When `SHOW_ADDRESS = True`, the tool looks up the nearest street address for each image's GPS coordinates and adds it to the overlay.
+
+- **Provider**: [Nominatim](https://nominatim.org/) (OpenStreetMap), via the **geopy** library — no API key required
+- **Rate limiting**: Nominatim enforces a **1 request per second** policy. The tool respects this automatically.
+- **In-memory cache**: Coordinates rounded to 6 decimal places (~0.1 m precision) are cached so the same location is never looked up twice within a single run.
+- **Pre-geocoding in CLI**: All GPS coordinates are resolved in the main process *before* images are dispatched to worker processes, so the cache is shared across all workers.
+- **Pre-geocoding in Web UI**: After loading a folder or uploading files, the server begins geocoding in the background. Preview and batch processing use the cached addresses automatically.
+- **Timeout**: Controlled by `GEOCODER_TIMEOUT` in `config.py` (default: 5 seconds). Increase this on slow connections.
+- **Graceful fallback**: If a lookup fails or times out, the address line is simply omitted from the overlay — processing continues normally.
+- **Privacy note**: GPS coordinates are sent to the public Nominatim service. For sensitive locations, set `SHOW_ADDRESS = False` or host your own Nominatim instance and update the `user_agent` in `exif_handler.py`.
+
 ## Dependencies
 
 - **Pillow (PIL) >= 10.0.0**: Image processing and text rendering
 - **piexif >= 1.1.3**: EXIF metadata extraction
 - **tqdm >= 4.65.0**: Progress bars for batch processing
-- **pyproj >= 3.0.0**: Coordinate system transformations (WGS84 to UTM/other CRS)
+- **pyproj >= 3.6.0**: Coordinate system transformations (WGS84 to UTM/other CRS)
+- **geopy >= 2.4.0**: Reverse geocoding via Nominatim (OpenStreetMap)
+- **fastapi >= 0.110.0**: Web UI backend framework
+- **uvicorn >= 0.29.0**: ASGI server for running the web UI
+- **python-multipart >= 0.0.9**: File upload support in the web UI
+- **jinja2 >= 3.1.0**: HTML template serving (used by FastAPI)
 
 ## Advanced Features
 
