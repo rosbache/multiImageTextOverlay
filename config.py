@@ -15,6 +15,10 @@ OUTPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\kabeltrase\processe
 # INPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\arbion hønefoss"           # Default input directory
 # OUTPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\arbion hønefoss\processed"         # Default output directory
 
+# Project information
+PROJECT_INFO = "22kV Kabeltrase Ringerike"            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
+# PROJECT_INFO = "Arbion Hønefoss"            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
+
 # Text appearance
 TEXT_COLOR = (255, 255, 255)  # RGB tuple - White
 OUTLINE_COLOR = (0, 0, 0)     # RGB tuple - Black outline for visibility
@@ -40,10 +44,6 @@ UTM_HEMISPHERE = 'N'           # UTM hemisphere ('N' or 'S')
 # Direction settings
 SHOW_DIRECTION = True          # Show image direction (from GPS)
 DIRECTION_PRECISION = 8        # Cardinal direction precision (8 or 16 sectors)
-
-# Project information
-PROJECT_INFO = "22kV Kabeltrase Ringerike"            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
-# PROJECT_INFO = "Arbion Hønefoss"            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
 
 # Processing settings
 MAX_WORKERS = 4                # Maximum number of parallel workers for multiprocessing
