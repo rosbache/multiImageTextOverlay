@@ -97,6 +97,7 @@ class ProcessRequest(BaseModel):
     source_folder: str
     output_dir: str
     settings: OverlaySettings
+    filenames: list[str] = []   # empty = process all
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +321,7 @@ async def load_folder(req: FolderRequest, background_tasks: BackgroundTasks):
 
 
 @app.post("/api/upload")
-async def upload_images(files: list[UploadFile] = File(...)):
+async def upload_images(background_tasks: BackgroundTasks, files: list[UploadFile] = File(...)):
     """Accept uploaded JPG files and save to temp directory."""
     saved = []
     for upload in files:
@@ -338,6 +339,9 @@ async def upload_images(files: list[UploadFile] = File(...)):
         raise HTTPException(status_code=400, detail="No valid JPG files in upload")
 
     jpg_files = [TEMP_UPLOAD_DIR / name for name in saved]
+
+    # Kick off geocoding in background (same as load_folder)
+    background_tasks.add_task(_geocode_images, jpg_files, config.GEOCODER_TIMEOUT)
 
     return {
         "source_folder": str(TEMP_UPLOAD_DIR),
@@ -380,6 +384,13 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
     if not jpg_files:
         raise HTTPException(status_code=400, detail="No JPG images found in source folder")
 
+    # Filter to requested filenames if provided
+    if req.filenames:
+        name_set = set(req.filenames)
+        jpg_files = [f for f in jpg_files if f.name in name_set]
+        if not jpg_files:
+            raise HTTPException(status_code=400, detail="None of the specified files were found")
+
     output_dir = Path(req.output_dir) if req.output_dir else source_folder / "processed"
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -388,10 +399,31 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
 
     cfg_dict = _settings_to_config_dict(req.settings)
 
-    # Build address map from cache
+    # Build address map: use cache where available, geocode synchronously for misses
     address_map: dict[str, Optional[str]] = {}
-    for f in jpg_files:
-        address_map[f.name] = _lookup_address(f)
+    if req.settings.show_address:
+        from exif_handler import extract_exif_data, reverse_geocode
+        for f in jpg_files:
+            addr = _lookup_address(f)
+            if addr is None:
+                # Cache miss — geocode now so we use the correct coordinates for this image
+                try:
+                    meta = extract_exif_data(str(f), filename=f.stem)
+                    lat = meta.get("_lat_decimal")
+                    lon = meta.get("_lon_decimal")
+                    if lat is not None and lon is not None:
+                        key = (round(lat, 6), round(lon, 6))
+                        if key not in address_cache:
+                            address_cache[key] = reverse_geocode(
+                                lat, lon, timeout=req.settings.geocoder_timeout
+                            )
+                        addr = address_cache.get(key)
+                except Exception as e:
+                    logger.warning(f"On-demand geocode failed for {f.name}: {e}")
+            address_map[f.name] = addr
+    else:
+        for f in jpg_files:
+            address_map[f.name] = None
 
     job_id = uuid.uuid4().hex
     jobs[job_id] = {
