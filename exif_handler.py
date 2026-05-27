@@ -44,7 +44,7 @@ def reverse_geocode(lat: float, lon: float, timeout: int = 5) -> Optional[str]:
     """
     global _last_geocode_time
 
-    key = (round(lat, 5), round(lon, 5))
+    key = (round(lat, 6), round(lon, 6))
     if key in _geocode_cache:
         logging.debug(f"Geocode cache hit for {key}")
         return _geocode_cache[key]
