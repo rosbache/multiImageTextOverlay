@@ -195,6 +195,14 @@
     }
     .img-item:hover { border-color: var(--accent2); }
     .img-item.active { border-color: var(--accent); background: #1a0e20; }
+    .img-item.selected { border-color: #e9a020; background: #1a1400; }
+    .img-item.active.selected { border-color: var(--accent); background: #2a1010; }
+    .img-item .check { display: inline-block; width: 13px; height: 13px; border: 1.5px solid var(--muted); border-radius: 3px; margin-right: 7px; flex-shrink: 0; vertical-align: middle; position: relative; top: -1px; }
+    .img-item.selected .check { background: #e9a020; border-color: #e9a020; }
+    .img-item.selected .check::after { content: ''; position: absolute; left: 3px; top: 0px; width: 5px; height: 8px; border: 2px solid #000; border-top: none; border-left: none; transform: rotate(45deg); }
+    .selection-bar { display: none; align-items: center; gap: 6px; padding: 6px 12px; background: #1a1400; border-bottom: 1px solid #e9a02040; flex-shrink: 0; }
+    .selection-bar.visible { display: flex; }
+    .selection-bar span { font-size: .75rem; color: #e9a020; flex: 1; }
     .no-images { color: var(--muted); font-size: .8rem; text-align: center; padding: 20px 10px; }
 
     /* ── Bottom bar ── */
@@ -278,6 +286,8 @@
     .btn-accent:hover { background: #c73652; border-color: #c73652; }
     .btn-green { background: #1a4a1a; border-color: var(--success); }
     .btn-green:hover { background: #245924; }
+    .btn-amber { background: #1a1400; border-color: #e9a020; color: #e9a020; }
+    .btn-amber:hover { background: #2a2000; }
     .btn:disabled { opacity: .4; cursor: not-allowed; }
 
     /* Progress */
@@ -474,6 +484,11 @@
   <!-- ══ RIGHT: Image list ══ -->
   <div class="panel">
     <div class="panel-title">Images <span id="image-count" style="color:var(--muted);font-weight:400"></span></div>
+    <div class="selection-bar" id="selection-bar">
+      <span id="selection-label">0 selected</span>
+      <button class="btn btn-amber" id="btn-select-all" style="padding:3px 9px;font-size:.73rem">All</button>
+      <button class="btn" id="btn-clear-selection" style="padding:3px 9px;font-size:.73rem">Clear</button>
+    </div>
     <div class="panel-scroll">
       <div id="image-list">
         <p class="no-images">Load a folder or upload files to begin.</p>
@@ -510,7 +525,8 @@
   <span class="output-label">→ Output:</span>
   <input type="text" id="output-path-input" placeholder="Output folder (leave blank for input/processed)" style="width:220px" />
 
-  <!-- Process all -->
+  <!-- Process selected / all -->
+  <button class="btn btn-amber" id="btn-process-selected" disabled>Process Selected</button>
   <button class="btn btn-green" id="btn-process" disabled>Process All</button>
 
   <!-- Progress + status -->
@@ -527,7 +543,8 @@
 let state = {
   sourceFolder: '',
   images: [],
-  selectedImage: null,
+  selectedImage: null,     // for preview
+  selectedSet: new Set(),  // for processing
   jobId: null,
   sseSource: null,
 };
@@ -647,15 +664,27 @@ function switchTab(tab) {
   document.getElementById('upload-input-area').style.display = tab === 'upload' ? 'flex' : 'none';
 }
 
+// ── Selection helpers ──
+function updateSelectionUI() {
+  const n = state.selectedSet.size;
+  const bar = document.getElementById('selection-bar');
+  const label = document.getElementById('selection-label');
+  bar.classList.toggle('visible', n > 0);
+  label.textContent = `${n} selected`;
+  document.getElementById('btn-process-selected').disabled = n === 0;
+}
+
 // ── Populate image list ──
 function populateImageList(images, sourceFolder) {
   state.images = images;
   state.sourceFolder = sourceFolder;
   state.selectedImage = null;
+  state.selectedSet.clear();
 
   const list = document.getElementById('image-list');
   list.innerHTML = '';
   document.getElementById('image-count').textContent = `(${images.length})`;
+  updateSelectionUI();
 
   if (images.length === 0) {
     list.innerHTML = '<p class="no-images">No JPG images found.</p>';
@@ -666,13 +695,37 @@ function populateImageList(images, sourceFolder) {
   for (const name of images) {
     const div = document.createElement('div');
     div.className = 'img-item';
-    div.textContent = name;
+    // checkbox indicator + name
+    div.innerHTML = `<span class="check"></span>${name}`;
     div.title = name;
-    div.addEventListener('click', () => selectImage(name, div));
+    div.dataset.name = name;
+    div.addEventListener('click', e => handleItemClick(name, div, e));
     list.appendChild(div);
   }
 
   document.getElementById('btn-process').disabled = false;
+}
+
+function handleItemClick(name, el, e) {
+  // Ctrl/Cmd or Shift toggles selection; plain click sets preview target
+  if (e.ctrlKey || e.metaKey || e.shiftKey) {
+    // toggle selection
+    if (state.selectedSet.has(name)) {
+      state.selectedSet.delete(name);
+      el.classList.remove('selected');
+    } else {
+      state.selectedSet.add(name);
+      el.classList.add('selected');
+    }
+    updateSelectionUI();
+  } else {
+    // plain click: set as preview target (does NOT clear multi-selection)
+    document.querySelectorAll('.img-item').forEach(i => i.classList.remove('active'));
+    el.classList.add('active');
+    state.selectedImage = name;
+    document.getElementById('preview-filename').textContent = name;
+    document.getElementById('btn-preview').disabled = false;
+  }
 }
 
 function selectImage(name, el) {
@@ -682,6 +735,18 @@ function selectImage(name, el) {
   document.getElementById('preview-filename').textContent = name;
   document.getElementById('btn-preview').disabled = false;
 }
+
+// Select all / clear
+document.getElementById('btn-select-all').addEventListener('click', () => {
+  state.selectedSet = new Set(state.images);
+  document.querySelectorAll('.img-item').forEach(el => el.classList.add('selected'));
+  updateSelectionUI();
+});
+document.getElementById('btn-clear-selection').addEventListener('click', () => {
+  state.selectedSet.clear();
+  document.querySelectorAll('.img-item').forEach(el => el.classList.remove('selected'));
+  updateSelectionUI();
+});
 
 // ── Load folder ──
 document.getElementById('btn-load-folder').addEventListener('click', async () => {
@@ -778,15 +843,18 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
   }
 });
 
-// ── Process all ──
-document.getElementById('btn-process').addEventListener('click', async () => {
+// ── Shared processing trigger ──
+async function triggerProcess(filenames) {
   if (!state.sourceFolder) { setStatus('No images loaded', 'err'); return; }
 
   const settings = gatherSettings();
   const outputDir = document.getElementById('output-path-input').value.trim();
+  const isAll = filenames.length === 0;
+  const label = isAll ? `all ${state.images.length}` : `${filenames.length} selected`;
 
-  setStatus('Starting batch processing…', 'info');
+  setStatus(`Starting processing for ${label} image(s)…`, 'info');
   document.getElementById('btn-process').disabled = true;
+  document.getElementById('btn-process-selected').disabled = true;
 
   try {
     const res = await fetch('/api/process', {
@@ -796,12 +864,14 @@ document.getElementById('btn-process').addEventListener('click', async () => {
         source_folder: state.sourceFolder,
         output_dir: outputDir,
         settings,
+        filenames,
       }),
     });
     if (!res.ok) {
       const err = await res.json();
       setStatus(err.detail || 'Failed to start processing', 'err');
       document.getElementById('btn-process').disabled = false;
+      document.getElementById('btn-process-selected').disabled = state.selectedSet.size === 0;
       return;
     }
     const d = await res.json();
@@ -810,7 +880,17 @@ document.getElementById('btn-process').addEventListener('click', async () => {
   } catch (e) {
     setStatus('Error: ' + e.message, 'err');
     document.getElementById('btn-process').disabled = false;
+    document.getElementById('btn-process-selected').disabled = state.selectedSet.size === 0;
   }
+}
+
+// ── Process All ──
+document.getElementById('btn-process').addEventListener('click', () => triggerProcess([]));
+
+// ── Process Selected ──
+document.getElementById('btn-process-selected').addEventListener('click', () => {
+  if (state.selectedSet.size === 0) return;
+  triggerProcess([...state.selectedSet]);
 });
 
 function startProgressStream(jobId, total) {
@@ -840,6 +920,7 @@ function startProgressStream(jobId, total) {
         setStatus(`Done: ${ok} ok, ${failed} failed.`, 'err');
       }
       document.getElementById('btn-process').disabled = false;
+      document.getElementById('btn-process-selected').disabled = state.selectedSet.size === 0;
     } else if (d.current_file) {
       setStatus(`Processing: ${d.current_file}`, 'info');
     }
@@ -849,6 +930,7 @@ function startProgressStream(jobId, total) {
     source.close();
     state.sseSource = null;
     document.getElementById('btn-process').disabled = false;
+    document.getElementById('btn-process-selected').disabled = state.selectedSet.size === 0;
   };
 }
 
