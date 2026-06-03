@@ -81,7 +81,7 @@ class OverlaySettings(BaseModel):
     show_address: bool = True
     geocoder_timeout: int = 5
     # Output
-    output_quality: int = 95
+    output_quality: int = 85
     file_collision_mode: str = "overwrite"
     # Processing
     max_workers: int = 4
@@ -322,7 +322,12 @@ async def load_folder(req: FolderRequest, background_tasks: BackgroundTasks):
 
 @app.post("/api/upload")
 async def upload_images(background_tasks: BackgroundTasks, files: list[UploadFile] = File(...)):
-    """Accept uploaded JPG files and save to temp directory."""
+    """Accept uploaded JPG files and save to a unique per-session temp directory."""
+    # Each upload batch gets its own subdirectory so stale files from previous
+    # uploads never mix with the current session.
+    session_dir = TEMP_UPLOAD_DIR / uuid.uuid4().hex
+    session_dir.mkdir(parents=True, exist_ok=True)
+
     saved = []
     for upload in files:
         if not upload.filename:
@@ -330,21 +335,22 @@ async def upload_images(background_tasks: BackgroundTasks, files: list[UploadFil
         suffix = Path(upload.filename).suffix.lower()
         if suffix not in (".jpg", ".jpeg"):
             continue
-        dest = TEMP_UPLOAD_DIR / upload.filename
+        dest = session_dir / upload.filename
         content = await upload.read()
         dest.write_bytes(content)
         saved.append(upload.filename)
 
     if not saved:
+        session_dir.rmdir()
         raise HTTPException(status_code=400, detail="No valid JPG files in upload")
 
-    jpg_files = [TEMP_UPLOAD_DIR / name for name in saved]
+    jpg_files = [session_dir / name for name in saved]
 
     # Kick off geocoding in background (same as load_folder)
     background_tasks.add_task(_geocode_images, jpg_files, config.GEOCODER_TIMEOUT)
 
     return {
-        "source_folder": str(TEMP_UPLOAD_DIR),
+        "source_folder": str(session_dir),
         "images": sorted(saved),
     }
 
@@ -474,10 +480,16 @@ async def job_progress(job_id: str):
 
 @app.delete("/api/session")
 async def cleanup_session():
-    """Remove uploaded temp files."""
+    """Remove all uploaded temp files and session subdirectories."""
     removed = 0
-    for f in TEMP_UPLOAD_DIR.iterdir():
-        if f.is_file():
-            f.unlink(missing_ok=True)
+    for item in TEMP_UPLOAD_DIR.iterdir():
+        if item.is_file():
+            item.unlink(missing_ok=True)
             removed += 1
+        elif item.is_dir():
+            for f in item.rglob("*"):
+                if f.is_file():
+                    f.unlink(missing_ok=True)
+                    removed += 1
+            item.rmdir()
     return {"removed": removed}
