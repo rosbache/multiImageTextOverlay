@@ -11,7 +11,7 @@ import sys
 
 # Directory settings
 INPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\kabeltrase"
-OUTPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\kabeltrase\processed"
+OUTPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\kabeltrase\processed building"
 # INPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\arbion hønefoss"           # Default input directory
 # OUTPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\arbion hønefoss\processed"         # Default output directory
 
