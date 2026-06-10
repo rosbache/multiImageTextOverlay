@@ -4,6 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Image Metadata Overlay</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+     crossorigin=""/>
+  
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -312,6 +318,76 @@
 
     /* Output dir label */
     .output-label { font-size: .75rem; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+    
+    /* ── Map styles ── */
+    .center-tabs {
+      display: flex;
+      gap: 0;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    .center-tab {
+      padding: 8px 16px;
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: .82rem;
+      border-bottom: 2px solid transparent;
+      transition: all .2s;
+    }
+    .center-tab:hover { color: var(--text); }
+    .center-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    
+    #map-container {
+      flex: 1;
+      position: relative;
+      display: none;
+    }
+    #map-container.active { display: block; }
+    
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+    
+    #preview-container-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    #preview-container-wrapper.active { display: flex; }
+    #preview-container-wrapper:not(.active) { display: none; }
+    
+    .map-controls {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .map-controls .btn {
+      font-size: .75rem;
+      padding: 6px 10px;
+      box-shadow: 0 2px 4px rgba(0,0,0,.3);
+    }
+    
+    .leaflet-popup-content {
+      color: #222;
+      font-size: .85rem;
+    }
+    .leaflet-popup-content strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+    .edited-marker {
+      filter: hue-rotate(90deg) brightness(1.2);
+    }
   </style>
 </head>
 <body>
@@ -461,23 +537,40 @@
     </div>
   </div>
 
-  <!-- ══ CENTER: Preview ══ -->
+  <!-- ══ CENTER: Map & Preview ══ -->
   <div class="preview-panel">
-    <div class="preview-toolbar">
-      <button class="btn btn-accent" id="btn-preview" disabled>Generate Preview</button>
-      <span id="preview-filename">No image selected</span>
+    <div class="center-tabs">
+      <button class="center-tab active" id="tab-preview" onclick="switchCenterTab('preview')">Preview</button>
+      <button class="center-tab" id="tab-map" onclick="switchCenterTab('map')">Map</button>
     </div>
-    <div class="preview-container">
-      <div class="preview-placeholder" id="preview-placeholder">
-        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-          <rect x="3" y="3" width="18" height="18" rx="2"/>
-          <circle cx="8.5" cy="8.5" r="1.5"/>
-          <path d="M21 15l-5-5L5 21"/>
-        </svg>
-        <span>Select an image and click Generate Preview</span>
+    
+    <!-- Preview tab content -->
+    <div id="preview-container-wrapper" class="active">
+      <div class="preview-toolbar">
+        <button class="btn btn-accent" id="btn-preview" disabled>Generate Preview</button>
+        <span id="preview-filename">No image selected</span>
       </div>
-      <img id="preview-img" alt="Preview" />
-      <div id="preview-spinner"><div class="spinner"></div></div>
+      <div class="preview-container">
+        <div class="preview-placeholder" id="preview-placeholder">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <path d="M21 15l-5-5L5 21"/>
+          </svg>
+          <span>Select an image and click Generate Preview</span>
+        </div>
+        <img id="preview-img" alt="Preview" />
+        <div id="preview-spinner"><div class="spinner"></div></div>
+      </div>
+    </div>
+    
+    <!-- Map tab content -->
+    <div id="map-container">
+      <div id="map"></div>
+      <div class="map-controls">
+        <button class="btn" id="btn-reset-location" disabled title="Reset selected image location">Reset Location</button>
+        <button class="btn" id="btn-reset-all-locations" disabled title="Reset all location edits">Reset All</button>
+      </div>
     </div>
   </div>
 
@@ -695,8 +788,9 @@ function populateImageList(images, sourceFolder) {
   for (const name of images) {
     const div = document.createElement('div');
     div.className = 'img-item';
-    // checkbox indicator + name
-    div.innerHTML = `<span class="check"></span>${name}`;
+    // checkbox indicator + name + edit indicator
+    const editIndicator = '<span class="edit-indicator" style="display:none;color:var(--warning);margin-left:4px;" title="Location edited">📍</span>';
+    div.innerHTML = `<span class="check"></span>${name}${editIndicator}`;
     div.title = name;
     div.dataset.name = name;
     div.addEventListener('click', e => handleItemClick(name, div, e));
@@ -736,6 +830,27 @@ function selectImage(name, el) {
   document.getElementById('btn-preview').disabled = false;
 }
 
+function updateImageList() {
+  // Update edit indicators for all images
+  document.querySelectorAll('.img-item').forEach(div => {
+    const name = div.dataset.name;
+    const indicator = div.querySelector('.edit-indicator');
+    
+    if (imageLocations[name]?.edited) {
+      if (indicator) indicator.style.display = 'inline';
+    } else {
+      if (indicator) indicator.style.display = 'none';
+    }
+    
+    // Update active state
+    if (name === state.selectedImage) {
+      div.classList.add('active');
+    } else {
+      div.classList.remove('active');
+    }
+  });
+}
+
 // Select all / clear
 document.getElementById('btn-select-all').addEventListener('click', () => {
   state.selectedSet = new Set(state.images);
@@ -767,6 +882,11 @@ document.getElementById('btn-load-folder').addEventListener('click', async () =>
     const d = await res.json();
     populateImageList(d.images, d.source_folder);
     setStatus(`Loaded ${d.images.length} image(s). Address lookup running in background…`, 'ok');
+    
+    // Refresh map if it exists
+    if (map) {
+      await refreshMapLocations();
+    }
   } catch (e) {
     setStatus('Error: ' + e.message, 'err');
   }
@@ -792,6 +912,11 @@ async function handleFiles(fileList) {
     const d = await res.json();
     populateImageList(d.images, d.source_folder);
     setStatus(`Uploaded ${d.images.length} image(s).`, 'ok');
+    
+    // Refresh map if it exists
+    if (map) {
+      await refreshMapLocations();
+    }
   } catch (e) {
     setStatus('Upload error: ' + e.message, 'err');
   }
@@ -944,6 +1069,216 @@ document.getElementById('s-output-quality').addEventListener('input', e => {
   await loadDefaults();
   await loadFonts();
 })();
+
+// ── Map & Location Management ──
+let map = null;
+let markers = {};  // filename -> marker
+let imageLocations = {};  // filename -> {lat, lon, has_gps, edited}
+
+function switchCenterTab(tab) {
+  const tabs = document.querySelectorAll('.center-tab');
+  const preview = document.getElementById('preview-container-wrapper');
+  const mapContainer = document.getElementById('map-container');
+  
+  tabs.forEach(t => t.classList.remove('active'));
+  
+  if (tab === 'map') {
+    document.getElementById('tab-map').classList.add('active');
+    preview.classList.remove('active');
+    mapContainer.classList.add('active');
+    
+    if (!map) {
+      initMap();
+    } else {
+      map.invalidateSize();
+    }
+  } else {
+    document.getElementById('tab-preview').classList.add('active');
+    mapContainer.classList.remove('active');
+    preview.classList.add('active');
+  }
+}
+
+function initMap() {
+  map = L.map('map').setView([59.9, 10.75], 6);  // Norway default
+  
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+    maxZoom: 19
+  }).addTo(map);
+  
+  // Load and display image locations
+  refreshMapLocations();
+}
+
+async function refreshMapLocations() {
+  if (!state.sourceFolder || !map) return;
+  
+  try {
+    const res = await fetch(`/api/image-locations?source_folder=${encodeURIComponent(state.sourceFolder)}`);
+    if (!res.ok) return;
+    
+    const data = await res.json();
+    imageLocations = {};
+    
+    // Clear existing markers
+    Object.values(markers).forEach(m => map.removeLayer(m));
+    markers = {};
+    
+    const bounds = [];
+    
+    data.locations.forEach(loc => {
+      imageLocations[loc.filename] = loc;
+      
+      if (loc.has_gps && loc.lat != null && loc.lon != null) {
+        const marker = L.marker([loc.lat, loc.lon], {
+          draggable: true,
+          title: loc.filename
+        });
+        
+        marker.bindPopup(`<strong>${loc.filename}</strong><br>
+          ${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}<br>
+          ${loc.address || 'No address'}`);
+        
+        marker.on('click', () => selectImageFromMap(loc.filename));
+        marker.on('dragend', (e) => onMarkerDrag(loc.filename, e.target.getLatLng()));
+        
+        if (loc.edited) {
+          marker.getElement()?.classList.add('edited-marker');
+        }
+        
+        marker.addTo(map);
+        markers[loc.filename] = marker;
+        bounds.push([loc.lat, loc.lon]);
+      }
+    });
+    
+    // Fit map to show all markers
+    if (bounds.length > 0) {
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
+    
+    updateMapControls();
+  } catch (e) {
+    console.error('Failed to load image locations:', e);
+  }
+}
+
+function selectImageFromMap(filename) {
+  state.selectedImage = filename;
+  updateImageList();
+  highlightSelectedMarker();
+  updateMapControls();
+}
+
+function highlightSelectedMarker() {
+  // Reset all markers
+  Object.values(markers).forEach(m => {
+    m.setOpacity(1.0);
+  });
+  
+  // Highlight selected
+  if (state.selectedImage && markers[state.selectedImage]) {
+    markers[state.selectedImage].setOpacity(0.6);
+    markers[state.selectedImage].openPopup();
+  }
+}
+
+async function onMarkerDrag(filename, latlng) {
+  try {
+    const res = await fetch('/api/update-location', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename,
+        lat: latlng.lat,
+        lon: latlng.lng
+      })
+    });
+    
+    if (res.ok) {
+      const marker = markers[filename];
+      marker.getElement()?.classList.add('edited-marker');
+      
+      // Update local state
+      if (imageLocations[filename]) {
+        imageLocations[filename].edited = true;
+        imageLocations[filename].lat = latlng.lat;
+        imageLocations[filename].lon = latlng.lng;
+      }
+      
+      // Update image list to show edited indicator
+      updateImageList();
+      updateMapControls();
+      
+      setStatus(`Updated location for ${filename}`, 'ok');
+    }
+  } catch (e) {
+    console.error('Failed to update location:', e);
+    setStatus('Failed to update location', 'err');
+  }
+}
+
+async function resetLocation(filename) {
+  try {
+    const res = await fetch('/api/update-location', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename,
+        reset: true
+      })
+    });
+    
+    if (res.ok) {
+      setStatus(`Reset location for ${filename}`, 'ok');
+      await refreshMapLocations();
+    }
+  } catch (e) {
+    console.error('Failed to reset location:', e);
+    setStatus('Failed to reset location', 'err');
+  }
+}
+
+async function resetAllLocations() {
+  const editedFiles = Object.keys(imageLocations).filter(f => imageLocations[f].edited);
+  
+  if (editedFiles.length === 0) {
+    setStatus('No edited locations to reset', 'info');
+    return;
+  }
+  
+  if (!confirm(`Reset ${editedFiles.length} edited location(s)?`)) {
+    return;
+  }
+  
+  for (const filename of editedFiles) {
+    await resetLocation(filename);
+  }
+}
+
+function updateMapControls() {
+  const hasSelected = state.selectedImage && imageLocations[state.selectedImage]?.edited;
+  const hasAnyEdited = Object.values(imageLocations).some(loc => loc.edited);
+  
+  document.getElementById('btn-reset-location').disabled = !hasSelected;
+  document.getElementById('btn-reset-all-locations').disabled = !hasAnyEdited;
+}
+
+document.getElementById('btn-reset-location').addEventListener('click', () => {
+  if (state.selectedImage) {
+    resetLocation(state.selectedImage);
+  }
+});
+
+document.getElementById('btn-reset-all-locations').addEventListener('click', resetAllLocations);
+
 </script>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+     crossorigin=""></script>
+
 </body>
 </html>

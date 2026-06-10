@@ -7,6 +7,7 @@ A Python tool that reads JPG images, extracts EXIF metadata (date, time, GPS loc
 - 📸 Extracts EXIF metadata from JPG images
 - 🕒 Displays date and time from image metadata
 - 📍 Shows GPS location in human-readable format (e.g., 40°42'46"N, 74°0'21"W)
+- 🗺️ **Map-based GPS correction** — visually correct wrong GPS locations before processing
 - 🗺️ Converts GPS coordinates to UTM or other projected coordinate systems
 - 🧭 Displays image direction in degrees with cardinal directions (N, NE, E, SE, S, SW, W, NW)
 - 🏠 Reverse geocoding — looks up the nearest street address from GPS coordinates
@@ -96,13 +97,13 @@ Or on Windows, double-click `start_web.bat`.
 
 Then open **http://localhost:8000** in your browser.
 
-The web interface has three panels:
+The web interface has three panels and two main views:
 
 | Panel | Description |
 |---|---|
 | **Left** | All overlay settings grouped in collapsible sections |
-| **Center** | Live preview — select an image then click *Generate Preview* |
-| **Right** | Scrollable list of loaded images; click to select |
+| **Center** | Preview tab: Live preview — select an image then click *Generate Preview*<br>Map tab: Interactive map showing all image locations with edit capability |
+| **Right** | Scrollable list of loaded images; click to select. Edited images show a 📍 indicator |
 
 **Loading images:**
 - **Folder tab** — type (or paste) a folder path and click *Load*. The server scans the folder and begins looking up addresses in the background.
@@ -111,7 +112,24 @@ The web interface has three panels:
 **Processing:**  
 Click *Process All* to batch-process all loaded images. A progress bar and live status message update as each file completes. Output is written to the *Output folder* field (defaults to `<input folder>/processed` if left blank).
 
-### Command-Line Options
+**Correcting GPS Locations:**
+
+Some images may have incorrect GPS coordinates (wrong location metadata). The map-based editor lets you visually correct these before processing:
+
+1. **View locations**: Click the *Map* tab in the center panel to see all images with GPS data plotted on an OpenStreetMap
+2. **Select image**: Click any marker on the map (or select from the image list) to highlight an image
+3. **Edit location**: 
+   - Drag the marker to the correct position, or
+   - Click on the map where the image should be located
+4. **Staged edits**: Location changes are *staged* (not immediately written to source files). Edited images show a warning-colored marker and a 📍 indicator in the image list.
+5. **Apply changes**: When you click *Process All* or *Process Selected*, staged edits are written to the source EXIF data *before* processing, then geocoding is refreshed for the new coordinates.
+6. **Reset**: Use *Reset Location* to undo edits for the selected image, or *Reset All* to clear all staged edits.
+
+> **Important**: Location edits modify the source image EXIF data when you process. This is intentional — it ensures the corrected location is permanently saved and will be used if you process the images again. Original files are modified only when you click Process.
+
+### Command-Line GPS Overrides
+
+You can also correct GPS locations via the CLI using a JSON override file:
 
 ```bash
 # Process with default settings
@@ -164,6 +182,7 @@ python main.py -i photos -o processed -p top-right -c 255 255 0 -s 60 --project-
 --no-direction                Disable image direction display
 --direction-precision {8,16}  Cardinal direction precision (8 or 16 sectors)
 --project-info TEXT           Project information text displayed at top
+--overrides FILE              JSON file with GPS location overrides
 -w, --workers N               Maximum number of parallel workers (max 6)
 --collision MODE              File collision handling: overwrite, skip, rename
 --dry-run                     Preview files without processing

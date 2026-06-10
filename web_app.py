@@ -41,6 +41,7 @@ app = FastAPI(title="Image Metadata Overlay", version="1.0.0")
 # In-memory stores
 jobs: dict[str, dict] = {}          # job_id -> {status, processed, total, results}
 address_cache: dict[tuple, Optional[str]] = {}  # (lat, lon) -> address string
+location_overrides: dict[str, dict] = {}  # filename -> {lat, lon, edited}
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,13 @@ class ProcessRequest(BaseModel):
     output_dir: str
     settings: OverlaySettings
     filenames: list[str] = []   # empty = process all
+
+
+class LocationUpdateRequest(BaseModel):
+    filename: str
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    reset: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -164,17 +172,27 @@ async def _geocode_images(jpg_files: list[Path], timeout: int):
 
 
 def _lookup_address(image_path: Path) -> Optional[str]:
-    """Look up cached address for an image."""
+    """Look up cached address for an image, checking overrides first."""
     from exif_handler import extract_exif_data
-    try:
-        meta = extract_exif_data(str(image_path), filename=image_path.stem)
-        lat = meta.get("_lat_decimal")
-        lon = meta.get("_lon_decimal")
-        if lat is not None and lon is not None:
-            key = (round(lat, 6), round(lon, 6))
-            return address_cache.get(key)
-    except Exception:
-        pass
+    
+    filename = image_path.name
+    
+    # Check for staged override first
+    if filename in location_overrides:
+        override = location_overrides[filename]
+        lat, lon = override['lat'], override['lon']
+    else:
+        try:
+            meta = extract_exif_data(str(image_path), filename=filename)
+            lat = meta.get("_lat_decimal")
+            lon = meta.get("_lon_decimal")
+        except Exception:
+            return None
+    
+    if lat is not None and lon is not None:
+        key = (round(lat, 6), round(lon, 6))
+        return address_cache.get(key)
+    
     return None
 
 
@@ -186,14 +204,33 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict) -> bytes:
     import config as cfg
     from image_processor import process_image
     from PIL import Image
+    from exif_handler import write_gps_to_exif
+    import shutil
 
     _apply_config_dict(cfg_dict)
+    
+    # Check if we need to apply a staged override
+    filename = Path(input_path).name
+    needs_temp_copy = filename in location_overrides
+    
+    if needs_temp_copy:
+        # Create temp copy to avoid modifying source during preview
+        temp_path = Path(tempfile.gettempdir()) / f"preview_input_{uuid.uuid4().hex}.jpg"
+        shutil.copy2(input_path, temp_path)
+        working_path = str(temp_path)
+        
+        # Apply override to temp copy
+        override = location_overrides[filename]
+        write_gps_to_exif(working_path, override['lat'], override['lon'])
+    else:
+        working_path = input_path
+        temp_path = None
 
     address = _lookup_address(Path(input_path))
 
     out_path = Path(tempfile.gettempdir()) / f"preview_{uuid.uuid4().hex}.jpg"
     try:
-        success = process_image(input_path, str(out_path), address=address)
+        success = process_image(working_path, str(out_path), address=address)
         if not success:
             raise RuntimeError("process_image returned False")
 
@@ -209,6 +246,8 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict) -> bytes:
     finally:
         if out_path.exists():
             out_path.unlink(missing_ok=True)
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
 
 def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
@@ -355,6 +394,94 @@ async def upload_images(background_tasks: BackgroundTasks, files: list[UploadFil
     }
 
 
+@app.get("/api/image-locations")
+async def get_image_locations(source_folder: str):
+    """Return locations for all images in the source folder."""
+    from exif_handler import extract_exif_data
+    
+    folder = Path(source_folder)
+    if not folder.exists() or not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {source_folder}")
+    
+    jpg_files = _get_jpg_files(str(folder))
+    locations = []
+    
+    for jpg_file in jpg_files:
+        filename = jpg_file.name
+        meta = extract_exif_data(str(jpg_file), filename=filename)
+        
+        # Check for override first
+        if filename in location_overrides:
+            override = location_overrides[filename]
+            lat = override['lat']
+            lon = override['lon']
+            has_gps = True
+            edited = override.get('edited', True)
+        else:
+            lat = meta.get('_lat_decimal')
+            lon = meta.get('_lon_decimal')
+            has_gps = lat is not None and lon is not None
+            edited = False
+        
+        # Get cached address if available
+        address = None
+        if has_gps:
+            key = (round(lat, 6), round(lon, 6))
+            address = address_cache.get(key)
+        
+        locations.append({
+            "filename": filename,
+            "lat": lat,
+            "lon": lon,
+            "has_gps": has_gps,
+            "edited": edited,
+            "address": address
+        })
+    
+    return {"locations": locations}
+
+
+@app.post("/api/update-location")
+async def update_location(req: LocationUpdateRequest):
+    """Stage or reset a location override for an image."""
+    if req.reset:
+        # Reset to original
+        if req.filename in location_overrides:
+            del location_overrides[req.filename]
+        return {"status": "reset", "filename": req.filename}
+    
+    if req.lat is None or req.lon is None:
+        raise HTTPException(status_code=400, detail="Both lat and lon required when not resetting")
+    
+    # Validate coordinates
+    from exif_handler import validate_coordinates
+    if not validate_coordinates(req.lat, req.lon):
+        raise HTTPException(status_code=400, detail=f"Invalid coordinates: lat={req.lat}, lon={req.lon}")
+    
+    # Stage the override
+    location_overrides[req.filename] = {
+        "lat": req.lat,
+        "lon": req.lon,
+        "edited": True
+    }
+    
+    # Update address cache in background
+    from exif_handler import reverse_geocode
+    key = (round(req.lat, 6), round(req.lon, 6))
+    if key not in address_cache:
+        try:
+            address_cache[key] = reverse_geocode(req.lat, req.lon, timeout=config.GEOCODER_TIMEOUT)
+        except Exception as e:
+            logger.warning(f"Geocoding failed for ({req.lat}, {req.lon}): {e}")
+    
+    return {
+        "status": "updated",
+        "filename": req.filename,
+        "lat": req.lat,
+        "lon": req.lon
+    }
+
+
 @app.post("/api/preview")
 async def generate_preview(req: PreviewRequest):
     """
@@ -404,6 +531,41 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
         raise HTTPException(status_code=400, detail=f"Cannot create output dir: {e}")
 
     cfg_dict = _settings_to_config_dict(req.settings)
+    
+    # Write staged location overrides to source EXIF before processing
+    if location_overrides:
+        from exif_handler import write_gps_to_exif, reverse_geocode
+        
+        override_results = []
+        for jpg_file in jpg_files:
+            if jpg_file.name in location_overrides:
+                override = location_overrides[jpg_file.name]
+                success = write_gps_to_exif(str(jpg_file), override['lat'], override['lon'])
+                override_results.append({
+                    "file": jpg_file.name,
+                    "success": success,
+                    "lat": override['lat'],
+                    "lon": override['lon']
+                })
+                
+                # Refresh address cache with new coordinates
+                if success and req.settings.show_address:
+                    key = (round(override['lat'], 6), round(override['lon'], 6))
+                    if key not in address_cache:
+                        try:
+                            address_cache[key] = reverse_geocode(
+                                override['lat'], override['lon'],
+                                timeout=req.settings.geocoder_timeout
+                            )
+                        except Exception as e:
+                            logger.warning(f"Geocoding failed for override {jpg_file.name}: {e}")
+        
+        if override_results:
+            logger.info(f"Applied {len(override_results)} location overrides to source EXIF")
+            # Clear overrides after writing to source
+            for result in override_results:
+                if result['success'] and result['file'] in location_overrides:
+                    del location_overrides[result['file']]
 
     # Build address map: use cache where available, geocode synchronously for misses
     address_map: dict[str, Optional[str]] = {}

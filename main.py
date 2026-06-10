@@ -177,6 +177,12 @@ Examples:
         help=f'File collision handling mode (default: {config.FILE_COLLISION_MODE})'
     )
     parser.add_argument(
+        '--overrides',
+        type=str,
+        metavar='FILE',
+        help='JSON file with location overrides (format: {"filename.jpg": {"lat": 59.9, "lon": 10.75}})'
+    )
+    parser.add_argument(
         '--dry-run',
         action='store_true',
         help='Preview files to be processed without actually processing them'
@@ -366,6 +372,57 @@ def main():
         return
     
     logging.info(f"Found {len(jpg_files)} image(s) to process")
+    
+    # Load and apply location overrides if provided
+    if args.overrides:
+        import json
+        from exif_handler import write_gps_to_exif
+        
+        try:
+            with open(args.overrides, 'r', encoding='utf-8') as f:
+                overrides = json.load(f)
+            
+            if not isinstance(overrides, dict):
+                logging.error(f"Overrides file must contain a JSON object, got {type(overrides).__name__}")
+                sys.exit(1)
+            
+            logging.info(f"Loaded {len(overrides)} location override(s) from {args.overrides}")
+            
+            # Apply overrides to source EXIF
+            override_count = 0
+            for jpg_file in jpg_files:
+                if jpg_file.name in overrides:
+                    override_data = overrides[jpg_file.name]
+                    
+                    if not isinstance(override_data, dict):
+                        logging.warning(f"Invalid override format for {jpg_file.name}, skipping")
+                        continue
+                    
+                    lat = override_data.get('lat')
+                    lon = override_data.get('lon')
+                    altitude = override_data.get('altitude')
+                    
+                    if lat is None or lon is None:
+                        logging.warning(f"Missing lat/lon in override for {jpg_file.name}, skipping")
+                        continue
+                    
+                    success = write_gps_to_exif(str(jpg_file), lat, lon, altitude)
+                    if success:
+                        override_count += 1
+                        logging.debug(f"Applied location override to {jpg_file.name}: ({lat:.6f}, {lon:.6f})")
+            
+            if override_count > 0:
+                logging.info(f"Applied {override_count} location override(s) to source EXIF data")
+        
+        except FileNotFoundError:
+            logging.error(f"Overrides file not found: {args.overrides}")
+            sys.exit(1)
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON in overrides file: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logging.error(f"Error loading overrides: {e}")
+            sys.exit(1)
     
     # Dry-run mode
     if args.dry_run:

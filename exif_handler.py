@@ -116,6 +116,49 @@ def rational_to_decimal(rational: Tuple[Tuple[int, int], ...]) -> float:
     return degrees + (minutes / MINUTES_PER_DEGREE) + (seconds / SECONDS_PER_DEGREE)
 
 
+def decimal_to_rational(decimal: float) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
+    """
+    Convert decimal degrees to GPS rational format (degrees, minutes, seconds).
+    
+    Args:
+        decimal: Decimal degree value (can be negative)
+        
+    Returns:
+        Tuple of 3 (numerator, denominator) pairs for degrees, minutes, seconds
+    """
+    # Work with absolute value; sign is handled by lat/lon reference
+    decimal = abs(decimal)
+    
+    degrees = int(decimal)
+    minutes_decimal = (decimal - degrees) * 60
+    minutes = int(minutes_decimal)
+    seconds_decimal = (minutes_decimal - minutes) * 60
+    
+    # Use high precision for seconds (1000000 parts)
+    seconds_numerator = int(seconds_decimal * 1000000)
+    seconds_denominator = 1000000
+    
+    return (
+        (degrees, 1),
+        (minutes, 1),
+        (seconds_numerator, seconds_denominator)
+    )
+
+
+def validate_coordinates(lat: float, lon: float) -> bool:
+    """
+    Validate latitude and longitude are within valid ranges.
+    
+    Args:
+        lat: Latitude in decimal degrees
+        lon: Longitude in decimal degrees
+        
+    Returns:
+        True if coordinates are valid, False otherwise
+    """
+    return -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+
+
 def decimal_to_dms(decimal: float, is_latitude: bool) -> str:
     """
     Convert decimal degrees to human-readable degrees, minutes, seconds format.
@@ -389,4 +432,78 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
         logging.warning(f"Unexpected error reading EXIF from {image_path}: {e}")
     
     return result
+
+
+def write_gps_to_exif(image_path: str, lat: float, lon: float, altitude: Optional[float] = None) -> bool:
+    """
+    Write GPS coordinates to image EXIF data, preserving other metadata.
+    
+    Args:
+        image_path: Path to the JPG image file
+        lat: Latitude in decimal degrees
+        lon: Longitude in decimal degrees
+        altitude: Optional altitude in meters above sea level
+        
+    Returns:
+        True if write was successful, False otherwise
+    """
+    if not validate_coordinates(lat, lon):
+        logging.error(f"Invalid coordinates for {image_path}: lat={lat}, lon={lon}")
+        return False
+    
+    try:
+        # Load existing EXIF data
+        try:
+            exif_dict = piexif.load(image_path)
+        except piexif.InvalidImageDataError:
+            # No EXIF data exists, create new dict
+            exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+            logging.debug(f"No existing EXIF in {image_path}, creating new data")
+        
+        # Ensure GPS IFD exists
+        if "GPS" not in exif_dict or exif_dict["GPS"] is None:
+            exif_dict["GPS"] = {}
+        
+        # Convert latitude
+        lat_rational = decimal_to_rational(lat)
+        lat_ref = b'N' if lat >= 0 else b'S'
+        
+        # Convert longitude
+        lon_rational = decimal_to_rational(lon)
+        lon_ref = b'E' if lon >= 0 else b'W'
+        
+        # Update GPS fields
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitude] = lat_rational
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitudeRef] = lat_ref
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitude] = lon_rational
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitudeRef] = lon_ref
+        
+        # Update altitude if provided
+        if altitude is not None:
+            altitude_ref = 0 if altitude >= 0 else 1
+            altitude_abs = abs(altitude)
+            # Use high precision for altitude (1000000 parts)
+            altitude_rational = (int(altitude_abs * 1000000), 1000000)
+            exif_dict["GPS"][piexif.GPSIFD.GPSAltitude] = altitude_rational
+            exif_dict["GPS"][piexif.GPSIFD.GPSAltitudeRef] = altitude_ref
+        
+        # Dump and write EXIF
+        exif_bytes = piexif.dump(exif_dict)
+        piexif.insert(exif_bytes, image_path)
+        
+        logging.info(f"Updated GPS in {image_path}: ({lat:.6f}, {lon:.6f})")
+        return True
+        
+    except piexif.InvalidImageDataError as e:
+        logging.error(f"Invalid image data when writing GPS to {image_path}: {e}")
+        return False
+    except FileNotFoundError:
+        logging.error(f"Image file not found: {image_path}")
+        return False
+    except (OSError, IOError) as e:
+        logging.error(f"Could not write to {image_path}: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"Unexpected error writing GPS to {image_path}: {e}")
+        return False
 
