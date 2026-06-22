@@ -53,7 +53,7 @@ FILE_COLLISION_MODE = 'overwrite' # Options: 'overwrite', 'skip', 'rename'
 
 # Address settings
 SHOW_ADDRESS = True            # Show nearest address (street + city) from GPS coordinates
-GEOCODER_TIMEOUT = 5           # Timeout in seconds for geocoding requests
+GEOCODER_TIMEOUT = 10           # Timeout in seconds for geocoding requests
 
 
 def validate_config():
