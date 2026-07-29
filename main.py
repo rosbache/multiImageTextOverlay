@@ -273,17 +273,17 @@ def get_unique_output_path(output_path: Path) -> Path:
         counter += 1
 
 
-def process_single_image(args_tuple: Tuple[Path, Path, str, dict, object]) -> Tuple[bool, str, str]:
+def process_single_image(args_tuple: Tuple[Path, Path, str, dict, object, object]) -> Tuple[bool, str, str]:
     """
     Wrapper function for processing a single image (for multiprocessing).
     
     Args:
-        args_tuple: Tuple of (input_path, output_dir, collision_mode, config_dict, address)
+        args_tuple: Tuple of (input_path, output_dir, collision_mode, config_dict, address, chainage)
         
     Returns:
         Tuple of (success, input_filename, message)
     """
-    input_path, output_dir, collision_mode, config_dict, address = args_tuple
+    input_path, output_dir, collision_mode, config_dict, address, chainage = args_tuple
     
     # Apply config overrides in worker process
     import config
@@ -302,7 +302,7 @@ def process_single_image(args_tuple: Tuple[Path, Path, str, dict, object]) -> Tu
             logging.debug(f"Renamed output to: {output_path.name}")
     
     # Process the image
-    success = process_image(str(input_path), str(output_path), address=address)
+    success = process_image(str(input_path), str(output_path), address=address, chainage=chainage)
     
     if success:
         return True, input_path.name, "processed successfully"
