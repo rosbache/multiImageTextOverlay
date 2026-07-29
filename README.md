@@ -1,27 +1,24 @@
 # Image Metadata Overlay
 
-A Python tool that reads JPG images, extracts EXIF metadata (date, time, GPS location), and creates copies with configurable text overlays displaying this information.
+A Python tool for processing JPG images with EXIF-driven text overlays. It supports CLI and FastAPI-based web workflows for metadata overlays, coordinate conversion, address lookup, and GPS correction, and it can also calculate chainage from a SOSI reference line in the web UI.
 
 ## Features
 
-- 📸 Extracts EXIF metadata from JPG images
-- 🕒 Displays date and time from image metadata
-- 📍 Shows GPS location in human-readable format (e.g., 40°42'46"N, 74°0'21"W)
-- 🗺️ **Map-based GPS correction** — visually correct wrong GPS locations before processing
-- 🗺️ Converts GPS coordinates to UTM or other projected coordinate systems
-- 🧭 Displays image direction in degrees with cardinal directions (N, NE, E, SE, S, SW, W, NW)
-- 🏠 Reverse geocoding — looks up the nearest street address from GPS coordinates
-- 📋 Optional project information overlay at the top of images
-- 🎨 Customizable text appearance (color, size, position)
-- ✨ Text outline for better visibility using native Pillow stroke API
-- 🔄 Batch processing with multiprocessing (up to 6 workers by default)
-- 🛡️ Preserves original EXIF metadata in output files
-- 💾 Smart file collision handling (rename, skip, or overwrite)
-- 📊 Progress bars for batch operations
-- 📝 Comprehensive logging with file output support
-- 🌐 Browser-based web UI (FastAPI) with live preview
-- 🎯 Command-line interface with extensive options
-- ✅ Dry-run mode for preview without processing
+- Extracts EXIF metadata from JPG images
+- Displays date and time from image metadata
+- Shows GPS location in human-readable format (for example, `40°42'46"N, 74°0'21"W`)
+- Corrects wrong GPS locations before processing, either on the map or through a JSON override file
+- Converts GPS coordinates to UTM or other projected coordinate systems
+- Displays image direction in degrees with cardinal directions
+- Optionally looks up the nearest street address from GPS coordinates
+- Calculates chainage from a SOSI `KURVE` reference line, with optional left/right offset text
+- Adds optional project information at the top of every image
+- Supports customizable text appearance, padding, and outline styling
+- Provides live preview, map view, and selective processing in the web UI
+- Processes images in parallel with configurable worker count
+- Preserves EXIF metadata in output files
+- Handles output collisions with overwrite, skip, or rename modes
+- Includes progress reporting, logging, and dry-run support
 
 ## Example Output
 
@@ -33,8 +30,10 @@ image001
 Date: 2024-08-15 14:30:22
 Location: 40°42'46"N, 74°0'21"W
 UTM 32N: 123456.78E, 987654.32N
+Address: Exampleveien 12, 3530 Røyse
 Height: 125.3 m
 Direction: 45° (NE)
+Chainage: kp 1+234
 ```
 <img width="344" height="60" alt="image" src="https://github.com/user-attachments/assets/24aea6f3-dd10-42ec-88d3-94d6bc6ec492" />
 
@@ -49,9 +48,14 @@ If an image has no metadata, it will display: "No metadata available"
 multiImageTextOverlay/
 ├── main.py              # CLI entry point
 ├── web_app.py           # FastAPI web UI entry point
-├── image_processor.py   # Core image processing and overlay logic
-├── exif_handler.py      # EXIF metadata extraction and geocoding utilities
-├── config.py            # User-configurable settings with validation
+├── image_processor.py   # Core image processing and overlay rendering
+├── exif_handler.py      # EXIF extraction, GPS utilities, and reverse geocoding
+├── chainage_calculator.py # SOSI reference line loading and chainage calculations
+├── sosi_parser.py       # General SOSI parsing utilities
+├── sosi_koordsys.jsonc  # SOSI coordinate-system lookup data
+├── config.py            # User-configurable defaults with validation
+├── launcher.py          # Desktop launcher entry point
+├── start_web.bat        # Windows helper for starting the web app
 ├── requirements.txt     # Python dependencies
 ├── templates/
 │   └── index.html       # Web UI (single-page, no build step required)
@@ -102,15 +106,15 @@ The web interface has three panels and two main views:
 | Panel | Description |
 |---|---|
 | **Left** | All overlay settings grouped in collapsible sections |
-| **Center** | Preview tab: Live preview — select an image then click *Generate Preview*<br>Map tab: Interactive map showing all image locations with edit capability |
-| **Right** | Scrollable list of loaded images; click to select. Edited images show a 📍 indicator |
+| **Center** | Preview tab: Live preview for the selected image<br>Map tab: Interactive map showing image locations and optional reference line geometry |
+| **Right** | Scrollable list of loaded images; click to select and optionally multi-select for partial processing |
 
 **Loading images:**
 - **Folder tab** — type (or paste) a folder path and click *Load*. The server scans the folder and begins looking up addresses in the background.
 - **Upload tab** — drag-and-drop JPG files onto the drop zone, or click to browse. Files are copied to a temporary folder on the server.
 
 **Processing:**  
-Click *Process All* to batch-process all loaded images. A progress bar and live status message update as each file completes. Output is written to the *Output folder* field (defaults to `<input folder>/processed` if left blank).
+Click *Process All* to batch-process every loaded image, or *Process Selected* to process only the currently selected subset. A progress bar and live status message update as each file completes. Output is written to the *Output folder* field (defaults to `<input folder>/processed` if left blank).
 
 **Correcting GPS Locations:**
 
@@ -121,11 +125,23 @@ Some images may have incorrect GPS coordinates (wrong location metadata). The ma
 3. **Edit location**: 
    - Drag the marker to the correct position, or
    - Click on the map where the image should be located
-4. **Staged edits**: Location changes are *staged* (not immediately written to source files). Edited images show a warning-colored marker and a 📍 indicator in the image list.
+4. **Staged edits**: Location changes are *staged* (not immediately written to source files). Edited images show warning styling in the map and image list.
 5. **Apply changes**: When you click *Process All* or *Process Selected*, staged edits are written to the source EXIF data *before* processing, then geocoding is refreshed for the new coordinates.
 6. **Reset**: Use *Reset Location* to undo edits for the selected image, or *Reset All* to clear all staged edits.
 
 > **Important**: Location edits modify the source image EXIF data when you process. This is intentional — it ensures the corrected location is permanently saved and will be used if you process the images again. Original files are modified only when you click Process.
+
+**Reference Lines and Chainage:**
+
+The web UI can also calculate chainage from a SOSI reference line:
+
+1. Load a `.sos` or `.sosi` file by path or upload it in the *Line / Chainage* section
+2. Select the `KURVE` object to use as the active reference line
+3. Choose whether to reverse the line direction and set marker spacing / chainage start offset
+4. Enable *Show chainage on overlay* to add formatted stationing text to previews and processed output
+5. Optionally include left/right offset from the line for each image location
+
+When a line is active, the map can display the reference geometry and chainage tick markers, and image popups are updated with computed chainage values.
 
 ### Command-Line GPS Overrides
 
@@ -144,8 +160,14 @@ python main.py --position top-right --color 255 0 0 --font-size 72
 # Control processing
 python main.py --workers 4 --collision skip
 
+# Disable reverse geocoding
+python main.py --no-address
+
 # Add project information
 python main.py --project-info "Highway Survey 2026 - Phase 1"
+
+# Apply corrected GPS coordinates before processing
+python main.py --overrides overrides.json
 
 # Use 16-sector compass for more precise directions
 python main.py --direction-precision 16
@@ -180,10 +202,11 @@ python main.py -i photos -o processed -p top-right -c 255 255 0 -s 60 --project-
 --no-utm                      Disable UTM coordinate display
 --show-direction              Enable image direction display
 --no-direction                Disable image direction display
+--no-address                  Disable nearest address lookup from GPS coordinates
 --direction-precision {8,16}  Cardinal direction precision (8 or 16 sectors)
 --project-info TEXT           Project information text displayed at top
 --overrides FILE              JSON file with GPS location overrides
--w, --workers N               Maximum number of parallel workers (max 6)
+-w, --workers N               Maximum number of parallel workers
 --collision MODE              File collision handling: overwrite, skip, rename
 --dry-run                     Preview files without processing
 -v, --verbose                 Enable debug logging
@@ -232,8 +255,19 @@ Edit `config.py` to customize default settings:
   - Example: "Highway Survey 2026 - Phase 1" or "Bridge Inspection Q1"
 
 ### Processing Settings
-- `MAX_WORKERS`: Maximum number of parallel workers (default: 6)
-- `FILE_COLLISION_MODE`: How to handle existing files - 'overwrite', 'skip', 'rename' (default: 'rename')
+- `MAX_WORKERS`: Maximum number of parallel workers (default: 4)
+- `FILE_COLLISION_MODE`: How to handle existing files - 'overwrite', 'skip', 'rename' (default: 'overwrite')
+
+### Address Settings
+- `SHOW_ADDRESS`: Enable/disable nearest-address lookup (default: True)
+- `GEOCODER_TIMEOUT`: Timeout in seconds for reverse geocoding requests (default: 10)
+
+### Chainage / Reference Line Settings
+- `SHOW_CHAINAGE`: Enable/disable chainage text in overlays (default: False)
+- `CHAINAGE_PREFIX`: Prefix used in formatted stationing text (default: `"kp"`)
+- `CHAINAGE_PRECISION`: Round chainage to the nearest N metres (default: 1)
+- `SHOW_CHAINAGE_OFFSET`: Append left/right offset from the reference line (default: False)
+- `CHAINAGE_START_M`: Value added to all displayed chainage values (default: 0.0)
 
 ### Coordinate System Conversion
 
@@ -256,9 +290,20 @@ When `SHOW_ADDRESS = True`, the tool looks up the nearest street address for eac
 - **In-memory cache**: Coordinates rounded to 6 decimal places (~0.1 m precision) are cached so the same location is never looked up twice within a single run.
 - **Pre-geocoding in CLI**: All GPS coordinates are resolved in the main process *before* images are dispatched to worker processes, so the cache is shared across all workers.
 - **Pre-geocoding in Web UI**: After loading a folder or uploading files, the server begins geocoding in the background. Preview and batch processing use the cached addresses automatically.
-- **Timeout**: Controlled by `GEOCODER_TIMEOUT` in `config.py` (default: 5 seconds). Increase this on slow connections.
+- **Timeout**: Controlled by `GEOCODER_TIMEOUT` in `config.py` (default: 10 seconds). Increase this on slow connections.
 - **Graceful fallback**: If a lookup fails or times out, the address line is simply omitted from the overlay — processing continues normally.
 - **Privacy note**: GPS coordinates are sent to the public Nominatim service. For sensitive locations, set `SHOW_ADDRESS = False` or host your own Nominatim instance and update the `user_agent` in `exif_handler.py`.
+
+### Chainage from SOSI Reference Lines
+
+When `SHOW_CHAINAGE = True` and a reference line is active in the web UI, the tool calculates stationing for each GPS-tagged image against the selected SOSI `KURVE` geometry.
+
+- **SOSI input**: Load `.sos` or `.sosi` files by path or upload
+- **Reference geometry**: Select the `KURVE` object to use as the active line
+- **Projected calculations**: Distances are computed in the projected coordinate system declared by the SOSI file
+- **Display formatting**: Output is formatted as values such as `kp 1+234`
+- **Offset support**: Optional perpendicular offset can be appended as left/right distance from the line
+- **Map visualization**: The active line and chainage tick markers can be shown in the map view
 
 ## Dependencies
 
@@ -288,16 +333,22 @@ Add custom project information that appears at the top of every processed image:
 - **Consistent branding**: Apply the same header to all images in a batch
 - **Command-line or config**: Set via `--project-info` flag or `PROJECT_INFO` in config.py
 
+### GPS Correction Workflow
+- **Interactive correction**: Move image positions in the web map before processing
+- **Selective application**: Process either all loaded images or only a selected subset
+- **Persistent fixes**: Corrected GPS coordinates are written back to the source EXIF data when processing starts
+- **CLI alternative**: Apply the same kind of correction through `--overrides` with a JSON file
+
 ### Multiprocessing
-The tool automatically uses up to 6 CPU cores for parallel processing of images, significantly speeding up batch operations. You can adjust this with the `--workers` option.
+The tool can process images in parallel using a configurable worker count. You can adjust this with the `--workers` option or by changing `MAX_WORKERS` in `config.py`.
 
 ### EXIF Preservation
 Original EXIF metadata is preserved in processed images, including camera settings, GPS data, and timestamps.
 
 ### File Collision Handling
-- **rename** (default): Adds a counter suffix to avoid overwriting (e.g., image_1.jpg, image_2.jpg)
+- **overwrite** (default): Replaces existing files
+- **rename**: Adds a counter suffix to avoid overwriting (e.g., image_1.jpg, image_2.jpg)
 - **skip**: Skips processing if output file already exists
-- **overwrite**: Replaces existing files
 
 ### Logging
 - Console logging with INFO level by default
@@ -318,12 +369,14 @@ Robust error handling with specific exception catching for:
 - Only JPG/JPEG images are currently supported
 - Images without EXIF data will still be processed but show "No metadata available"
 - GPS coordinates are displayed in degrees, minutes, seconds format
+- Reverse geocoding and chainage display are optional and can be disabled
 - Image direction is only shown if GPS direction data (`GPSImgDirection`) is available in EXIF
   - Most modern smartphones and drones with GPS+compass record this data
   - Images without direction data will show "Direction: N/A" if direction display is enabled
 - Configuration is validated at startup to catch errors early
 - Font fallback mechanism tries multiple system fonts if custom font fails
-- Original images in the `input/` folder are not modified
+- Normal overlay rendering writes processed copies to the output directory
+- Source images are modified only when you explicitly apply GPS corrections through the web UI or the `--overrides` CLI workflow
 
 ## License
 
