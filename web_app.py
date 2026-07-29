@@ -24,6 +24,15 @@ from pydantic import BaseModel, validator
 import config
 
 # ---------------------------------------------------------------------------
+# Lazy import helper for chainage module
+# ---------------------------------------------------------------------------
+
+def _get_chainage_calculator():
+    """Lazy import of chainage_calculator to avoid hard dependency at startup."""
+    import chainage_calculator
+    return chainage_calculator
+
+# ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
@@ -42,6 +51,11 @@ app = FastAPI(title="Image Metadata Overlay", version="1.0.0")
 jobs: dict[str, dict] = {}          # job_id -> {status, processed, total, results}
 address_cache: dict[tuple, Optional[str]] = {}  # (lat, lon) -> address string
 location_overrides: dict[str, dict] = {}  # filename -> {lat, lon, edited}
+reversegeocodeProgress: dict = {"running": False, "done": 0, "total": 0}  # live geocode progress
+
+# Active reference line state
+active_line: Optional[dict] = None   # {line: LineGeometry, geojson, markers_geojson}
+sosi_temp_path: Optional[str] = None  # path of the currently loaded SOSI file
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +100,12 @@ class OverlaySettings(BaseModel):
     file_collision_mode: str = "overwrite"
     # Processing
     max_workers: int = 4
+    # Chainage
+    show_chainage: bool = False
+    chainage_prefix: str = "kp"
+    chainage_precision: int = 1
+    show_chainage_offset: bool = False
+    chainage_start_m: float = 0.0
 
 
 class PreviewRequest(BaseModel):
@@ -106,6 +126,25 @@ class LocationUpdateRequest(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
     reset: bool = False
+
+
+class LoadLinePathRequest(BaseModel):
+    path: str
+
+
+class SelectKurveRequest(BaseModel):
+    object_id: int
+    reverse: bool = False
+    interval_m: float = 25.0
+    start_m: float = 0.0
+
+
+class CalculateChainagesRequest(BaseModel):
+    source_folder: str
+    precision: float = 1.0
+    prefix: str = "kp"
+    show_offset: bool = False
+    start_m: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +173,11 @@ def _settings_to_config_dict(s: OverlaySettings) -> dict:
         "GEOCODER_TIMEOUT": s.geocoder_timeout,
         "FILE_COLLISION_MODE": s.file_collision_mode,
         "MAX_WORKERS": s.max_workers,
+        "SHOW_CHAINAGE": s.show_chainage,
+        "CHAINAGE_PREFIX": s.chainage_prefix,
+        "CHAINAGE_PRECISION": s.chainage_precision,
+        "SHOW_CHAINAGE_OFFSET": s.show_chainage_offset,
+        "CHAINAGE_START_M": s.chainage_start_m,
     }
 
 
@@ -154,6 +198,11 @@ async def _geocode_images(jpg_files: list[Path], timeout: int):
     """Pre-geocode GPS coordinates for a list of images (runs in thread pool)."""
     from exif_handler import extract_exif_data, reverse_geocode
 
+    # State is pre-set by the calling endpoint; ensure consistency
+    reversegeocodeProgress["running"] = True
+    reversegeocodeProgress["done"] = 0
+    reversegeocodeProgress["total"] = len(jpg_files)
+
     def geocode_one(f: Path) -> tuple:
         try:
             meta = extract_exif_data(str(f), filename=f.stem)
@@ -165,10 +214,14 @@ async def _geocode_images(jpg_files: list[Path], timeout: int):
                     address_cache[key] = reverse_geocode(lat, lon, timeout=timeout)
         except Exception as e:
             logger.warning(f"Geocode failed for {f.name}: {e}")
+        finally:
+            reversegeocodeProgress["done"] += 1
 
     loop = asyncio.get_event_loop()
     for f in jpg_files:
         await loop.run_in_executor(None, geocode_one, f)
+
+    reversegeocodeProgress["running"] = False
 
 
 def _lookup_address(image_path: Path) -> Optional[str]:
@@ -196,7 +249,7 @@ def _lookup_address(image_path: Path) -> Optional[str]:
     return None
 
 
-def _generate_preview_sync(input_path: str, cfg_dict: dict) -> bytes:
+def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[str] = None) -> bytes:
     """
     Run process_image in-process (called via asyncio.to_thread).
     Returns PNG bytes of the processed image scaled to max 1200px wide.
@@ -230,7 +283,7 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict) -> bytes:
 
     out_path = Path(tempfile.gettempdir()) / f"preview_{uuid.uuid4().hex}.jpg"
     try:
-        success = process_image(working_path, str(out_path), address=address)
+        success = process_image(working_path, str(out_path), address=address, chainage=chainage)
         if not success:
             raise RuntimeError("process_image returned False")
 
@@ -252,7 +305,7 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict) -> bytes:
 
 def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
                    cfg_dict: dict, collision_mode: str, max_workers: int,
-                   address_map: dict):
+                   address_map: dict, chainage_map: dict):
     """
     Execute batch processing in a background thread.
     Calls process_single_image workers via ProcessPoolExecutor.
@@ -263,7 +316,7 @@ def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
     jobs[job_id]["total"] = len(jpg_files)
 
     process_args = [
-        (jpg, output_dir, collision_mode, cfg_dict, address_map.get(jpg.name))
+        (jpg, output_dir, collision_mode, cfg_dict, address_map.get(jpg.name), chainage_map.get(jpg.name))
         for jpg in jpg_files
     ]
 
@@ -323,6 +376,11 @@ async def get_settings():
         "max_workers": config.MAX_WORKERS,
         "input_dir": config.INPUT_DIR,
         "output_dir": config.OUTPUT_DIR,
+        "show_chainage": config.SHOW_CHAINAGE,
+        "chainage_prefix": config.CHAINAGE_PREFIX,
+        "chainage_precision": config.CHAINAGE_PRECISION,
+        "show_chainage_offset": config.SHOW_CHAINAGE_OFFSET,
+        "chainage_start_m": getattr(config, "CHAINAGE_START_M", 0.0),
     }
 
 
@@ -347,6 +405,11 @@ async def load_folder(req: FolderRequest, background_tasks: BackgroundTasks):
     jpg_files = _get_jpg_files(str(folder))
     if not jpg_files:
         return {"source_folder": str(folder), "images": []}
+
+    # Pre-initialise progress so the first poll sees it immediately
+    reversegeocodeProgress["running"] = True
+    reversegeocodeProgress["done"] = 0
+    reversegeocodeProgress["total"] = len(jpg_files)
 
     # Kick off geocoding in background
     background_tasks.add_task(
@@ -384,6 +447,11 @@ async def upload_images(background_tasks: BackgroundTasks, files: list[UploadFil
         raise HTTPException(status_code=400, detail="No valid JPG files in upload")
 
     jpg_files = [session_dir / name for name in saved]
+
+    # Pre-initialise progress so the first poll sees it immediately
+    reversegeocodeProgress["running"] = True
+    reversegeocodeProgress["done"] = 0
+    reversegeocodeProgress["total"] = len(jpg_files)
 
     # Kick off geocoding in background (same as load_folder)
     background_tasks.add_task(_geocode_images, jpg_files, config.GEOCODER_TIMEOUT)
@@ -494,9 +562,34 @@ async def generate_preview(req: PreviewRequest):
 
     cfg_dict = _settings_to_config_dict(req.settings)
 
+    # Compute chainage for this image if a reference line is active
+    chainage_str: Optional[str] = None
+    if active_line is not None and req.settings.show_chainage:
+        try:
+            from exif_handler import extract_exif_data
+            cc = _get_chainage_calculator()
+            meta = extract_exif_data(str(input_path), filename=req.filename)
+            lat = meta.get("_lat_decimal")
+            lon = meta.get("_lon_decimal")
+            # Check staged override
+            if req.filename in location_overrides:
+                ov = location_overrides[req.filename]
+                lat, lon = ov["lat"], ov["lon"]
+            if lat is not None and lon is not None:
+                result = cc.calculate_chainage(
+                    active_line["line"], lat, lon,
+                    precision=req.settings.chainage_precision,
+                    prefix=req.settings.chainage_prefix,
+                    show_offset=req.settings.show_chainage_offset,
+                    start_m=req.settings.chainage_start_m,
+                )
+                chainage_str = result.formatted
+        except Exception as e:
+            logger.warning(f"Chainage calc failed for preview {req.filename}: {e}")
+
     try:
         img_bytes = await asyncio.to_thread(
-            _generate_preview_sync, str(input_path), cfg_dict
+            _generate_preview_sync, str(input_path), cfg_dict, chainage_str
         )
     except Exception as e:
         logger.error(f"Preview failed: {e}")
@@ -602,11 +695,42 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
         "results": [],
     }
 
+    # Build chainage map if a reference line is loaded and chainage display is enabled
+    chainage_map: dict[str, Optional[str]] = {f.name: None for f in jpg_files}
+    if active_line is not None and req.settings.show_chainage:
+        try:
+            from exif_handler import extract_exif_data
+            cc = _get_chainage_calculator()
+            locs = []
+            for f in jpg_files:
+                fn = f.name
+                if fn in location_overrides:
+                    ov = location_overrides[fn]
+                    locs.append({"filename": fn, "lat": ov["lat"], "lon": ov["lon"]})
+                else:
+                    try:
+                        meta = extract_exif_data(str(f), filename=fn)
+                        locs.append({"filename": fn,
+                                     "lat": meta.get("_lat_decimal"),
+                                     "lon": meta.get("_lon_decimal")})
+                    except Exception:
+                        locs.append({"filename": fn, "lat": None, "lon": None})
+            results = cc.batch_calculate_chainages(
+                active_line["line"], locs,
+                precision=req.settings.chainage_precision,
+                prefix=req.settings.chainage_prefix,
+                show_offset=req.settings.show_chainage_offset,
+                start_m=req.settings.chainage_start_m,
+            )
+            chainage_map = {name: d["formatted"] for name, d in results.items()}
+        except Exception as e:
+            logger.warning(f"Chainage batch calculation failed: {e}")
+
     background_tasks.add_task(
         _run_batch_job,
         job_id, jpg_files, output_dir,
         cfg_dict, req.settings.file_collision_mode,
-        req.settings.max_workers, address_map,
+        req.settings.max_workers, address_map, chainage_map,
     )
 
     return {"job_id": job_id, "total": len(jpg_files)}
@@ -638,6 +762,165 @@ async def job_progress(job_id: str):
             await asyncio.sleep(0.4)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/geocode-progress")
+async def get_geocode_progress():
+    """Return current background geocoding progress."""
+    return {
+        "running": reversegeocodeProgress["running"],
+        "done": reversegeocodeProgress["done"],
+        "total": reversegeocodeProgress["total"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reference line / chainage endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/api/load-sosi-line-path")
+async def load_sosi_line_path(req: LoadLinePathRequest):
+    """Parse a SOSI file at *req.path* and return the list of available KURVEs."""
+    global sosi_temp_path
+    path = Path(req.path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=400, detail=f"File not found: {req.path}")
+    if path.suffix.lower() not in (".sos", ".sosi"):
+        raise HTTPException(status_code=400, detail="File must be a .sos or .sosi file")
+    try:
+        cc = _get_chainage_calculator()
+        kurves = cc.list_sosi_kurves(str(path))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse SOSI file: {e}")
+    sosi_temp_path = str(path)
+    return {"kurves": kurves, "source_path": str(path)}
+
+
+@app.post("/api/upload-sosi-line")
+async def upload_sosi_line(file: UploadFile = File(...)):
+    """Accept an uploaded SOSI file and return the list of available KURVEs."""
+    global sosi_temp_path
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in (".sos", ".sosi"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be .sos or .sosi")
+    session_dir = TEMP_UPLOAD_DIR / uuid.uuid4().hex
+    session_dir.mkdir(parents=True, exist_ok=True)
+    dest = session_dir / file.filename
+    content = await file.read()
+    dest.write_bytes(content)
+    try:
+        cc = _get_chainage_calculator()
+        kurves = cc.list_sosi_kurves(str(dest))
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Failed to parse SOSI file: {e}")
+    sosi_temp_path = str(dest)
+    return {"kurves": kurves, "source_path": str(dest)}
+
+
+@app.post("/api/select-kurve")
+async def select_kurve(req: SelectKurveRequest):
+    """Load a specific KURVE from the current SOSI file and store it as the active line."""
+    global active_line
+    if sosi_temp_path is None:
+        raise HTTPException(status_code=400, detail="No SOSI file loaded. Load a file first.")
+    try:
+        cc = _get_chainage_calculator()
+        line = cc.load_sosi_line(sosi_temp_path, req.object_id, reverse=req.reverse)
+        geojson_line = cc.get_line_geojson(line)
+        markers_geojson = cc.get_chainage_markers_geojson(
+            line, interval_m=req.interval_m,
+            start_m=req.start_m, prefix="kp",
+        )
+        active_line = {
+            "line": line,
+            "geojson_line": geojson_line,
+            "markers_geojson": markers_geojson,
+            "interval_m": req.interval_m,
+            "start_m": req.start_m,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to load KURVE {req.object_id}: {e}")
+    return {
+        "geojson_line": geojson_line,
+        "markers_geojson": markers_geojson,
+        "total_length_m": round(line.total_length, 1),
+        "epsg": line.epsg,
+        "object_id": line.object_id,
+        "object_type": line.object_type,
+    }
+
+
+@app.get("/api/line-geometry")
+async def get_line_geometry(interval_m: float = 25.0, start_m: float = 0.0):
+    """Return the stored active line GeoJSON and chainage markers."""
+    if active_line is None:
+        raise HTTPException(status_code=404, detail="No reference line loaded")
+    # Re-generate markers if the interval or start_m changed
+    stored_interval = active_line.get("interval_m", 25.0)
+    stored_start_m = active_line.get("start_m", 0.0)
+    if abs(interval_m - stored_interval) > 0.01 or abs(start_m - stored_start_m) > 0.01:
+        cc = _get_chainage_calculator()
+        markers = cc.get_chainage_markers_geojson(
+            active_line["line"], interval_m=interval_m,
+            start_m=start_m, prefix="kp",
+        )
+    else:
+        markers = active_line["markers_geojson"]
+    return {
+        "geojson_line": active_line["geojson_line"],
+        "markers_geojson": markers,
+        "total_length_m": round(active_line["line"].total_length, 1),
+        "epsg": active_line["line"].epsg,
+    }
+
+
+@app.delete("/api/clear-line")
+async def clear_line():
+    """Remove the active reference line from memory."""
+    global active_line
+    active_line = None
+    return {"status": "cleared"}
+
+
+@app.post("/api/calculate-chainages")
+async def calculate_chainages_endpoint(req: CalculateChainagesRequest):
+    """Compute chainage for all GPS-tagged images in *source_folder*."""
+    if active_line is None:
+        raise HTTPException(status_code=400, detail="No reference line loaded")
+    folder = Path(req.source_folder)
+    if not folder.exists() or not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {req.source_folder}")
+    try:
+        from exif_handler import extract_exif_data
+        cc = _get_chainage_calculator()
+        jpg_files = _get_jpg_files(str(folder))
+        locs = []
+        for f in jpg_files:
+            fn = f.name
+            if fn in location_overrides:
+                ov = location_overrides[fn]
+                locs.append({"filename": fn, "lat": ov["lat"], "lon": ov["lon"]})
+            else:
+                try:
+                    meta = extract_exif_data(str(f), filename=fn)
+                    locs.append({"filename": fn,
+                                 "lat": meta.get("_lat_decimal"),
+                                 "lon": meta.get("_lon_decimal")})
+                except Exception:
+                    locs.append({"filename": fn, "lat": None, "lon": None})
+        results = cc.batch_calculate_chainages(
+            active_line["line"], locs,
+            precision=req.precision,
+            start_m=req.start_m,
+            prefix=req.prefix,
+            show_offset=req.show_offset,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chainage calculation failed: {e}")
+    return {"chainages": results}
 
 
 @app.delete("/api/session")
