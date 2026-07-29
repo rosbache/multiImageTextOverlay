@@ -61,6 +61,11 @@ def create_overlay_text(metadata: dict) -> str:
         else:
             lines.append("Direction: N/A")
     
+    # Add chainage if configured
+    if metadata.get('show_chainage'):
+        ch = metadata.get('chainage')
+        lines.append(f"Chainage: {ch}" if ch else "Chainage: N/A")
+
     # If only filename/project exists, add "No metadata available"
     metadata_exists = any([
         metadata.get('datetime'),
@@ -113,7 +118,7 @@ def load_font_with_fallback() -> ImageFont.FreeTypeFont:
             return ImageFont.load_default()
 
 
-def process_image(input_path: str, output_path: str, address: str = None) -> bool:
+def process_image(input_path: str, output_path: str, address: str = None, chainage: str = None) -> bool:
     """
     Process a single image by adding metadata overlay.
     
@@ -121,6 +126,7 @@ def process_image(input_path: str, output_path: str, address: str = None) -> boo
         input_path: Path to source JPG image
         output_path: Path to save processed image
         address: Pre-computed address string from geocoding (or None)
+        chainage: Pre-computed chainage string, e.g. "kp 1+234" (or None)
         
     Returns:
         True if successful, False otherwise
@@ -142,6 +148,11 @@ def process_image(input_path: str, output_path: str, address: str = None) -> boo
         
         # Add direction display flag
         metadata['show_direction'] = config.SHOW_DIRECTION
+
+        # Add chainage if available
+        metadata['show_chainage'] = config.SHOW_CHAINAGE
+        if chainage is not None:
+            metadata['chainage'] = chainage
         
         # Convert direction to cardinal if available and enabled
         if config.SHOW_DIRECTION and metadata.get('direction') is not None:
