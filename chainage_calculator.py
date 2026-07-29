@@ -225,11 +225,14 @@ def get_line_geojson(line: LineGeometry) -> dict:
 def get_chainage_markers_geojson(
     line: LineGeometry,
     interval_m: float = 25.0,
+    start_m: float = 0.0,
+    prefix: str = "kp",
 ) -> dict:
     """Return a GeoJSON FeatureCollection of chainage tick points.
 
     A point is placed every *interval_m* metres starting at 0.  Each
-    feature carries ``chainage_m`` and ``label`` properties.
+    feature carries ``chainage_m`` (raw distance from line start) and
+    ``label`` (formatted with *start_m* offset applied) properties.
     """
     t = _transformer_to_wgs84(line.epsg)
     features = []
@@ -237,7 +240,7 @@ def get_chainage_markers_geojson(
     while d <= line.total_length + 1e-6:
         e, n = _interpolate_utm(line, d)
         lon, lat = t.transform(e, n)
-        label = _format_chainage(d, "kp")
+        label = _format_chainage(d + start_m, prefix)
         features.append({
             "type": "Feature",
             "properties": {
@@ -265,6 +268,7 @@ def calculate_chainage(
     precision: float = 1.0,
     prefix: str = "kp",
     show_offset: bool = False,
+    start_m: float = 0.0,
 ) -> ChainageResult:
     """Compute the chainage and optional L/R offset for a single GPS point.
 
@@ -347,7 +351,7 @@ def calculate_chainage(
     if precision > 0:
         best_chainage_m = round(best_chainage_m / precision) * precision
 
-    formatted = _format_chainage(best_chainage_m, prefix)
+    formatted = _format_chainage(best_chainage_m + start_m, prefix)
     if show_offset:
         formatted += f" ({best_offset_side} {best_dist:.1f}m)"
 
@@ -366,6 +370,7 @@ def batch_calculate_chainages(
     precision: float = 1.0,
     prefix: str = "kp",
     show_offset: bool = False,
+    start_m: float = 0.0,
 ) -> Dict[str, dict]:
     """Compute chainages for a list of image location dicts.
 
@@ -392,7 +397,7 @@ def batch_calculate_chainages(
                 "chainage_m": 0.0, "offset_m": 0.0, "offset_side": "",
             }
         else:
-            r = calculate_chainage(line, lat, lon, precision, prefix, show_offset)
+            r = calculate_chainage(line, lat, lon, precision, prefix, show_offset, start_m)
             results[name] = {
                 "valid": r.valid,
                 "chainage_m": r.chainage_m,
