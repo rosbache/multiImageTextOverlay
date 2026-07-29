@@ -389,6 +389,23 @@
       padding: 6px 10px;
       box-shadow: 0 2px 4px rgba(0,0,0,.3);
     }
+    #map-chainage-summary {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      font-size: .75rem;
+      color: #ffd39b;
+      background: rgba(10, 15, 30, .86);
+      border: 1px solid #ff8c00;
+      border-radius: 7px;
+      padding: 5px 8px;
+      max-width: 62%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      box-shadow: 0 2px 4px rgba(0,0,0,.3);
+    }
     
     .leaflet-popup-content {
       color: #222;
@@ -400,6 +417,12 @@
     }
     .edited-marker {
       filter: hue-rotate(90deg) brightness(1.2);
+    }
+    .selected-marker {
+      filter: hue-rotate(25deg) brightness(1.15) saturate(1.2);
+    }
+    .selected-marker.is-preview {
+      filter: hue-rotate(340deg) brightness(1.25) saturate(1.35);
     }
 
     /* ── Chainage / line styles ── */
@@ -414,6 +437,7 @@
     }
     .chainage-tooltip::before { display: none !important; }
     #line-status { font-size: .72rem; color: var(--accent2); padding: 2px 0; min-height: 16px; }
+    #chainage-last-exact { font-size: .72rem; color: var(--muted); min-height: 16px; }
     .sosi-load-row { display: flex; gap: 5px; align-items: flex-end; }
     .sosi-load-row input { flex: 1; }
     .sosi-load-row .btn { flex-shrink: 0; }
@@ -624,6 +648,7 @@
               <input type="number" id="s-chainage-label-interval" value="50" min="10" max="5000" step="10" title="Show chainage label every N metres along the line" />
             </label>
           </div>
+          <div id="chainage-last-exact">Last chainage (exact): -</div>
         </div>
       </details>
 
@@ -655,6 +680,7 @@
     <!-- Map (below, larger) -->
     <div id="map-container">
       <div id="map"></div>
+      <div id="map-chainage-summary">Last chainage: -</div>
       <div class="map-controls">
         <button class="btn" id="btn-reset-location" disabled title="Reset selected image location">Reset Location</button>
         <button class="btn" id="btn-reset-all-locations" disabled title="Reset all location edits">Reset All</button>
@@ -870,6 +896,7 @@ function updateSelectionUI() {
   bar.classList.toggle('visible', n > 0);
   label.textContent = `${n} selected`;
   document.getElementById('btn-process-selected').disabled = n === 0;
+  updateMapSelectionMarkers();
 }
 
 // ── Populate image list ──
@@ -924,6 +951,7 @@ function handleItemClick(name, el, e) {
     state.selectedImage = name;
     document.getElementById('preview-filename').textContent = name;
     document.getElementById('btn-preview').disabled = false;
+    updateMapSelectionMarkers();
   }
 }
 
@@ -933,6 +961,7 @@ function selectImage(name, el) {
   state.selectedImage = name;
   document.getElementById('preview-filename').textContent = name;
   document.getElementById('btn-preview').disabled = false;
+  updateMapSelectionMarkers();
 }
 
 function updateImageList() {
@@ -954,6 +983,26 @@ function updateImageList() {
       div.classList.remove('active');
     }
   });
+}
+
+function updateMapSelectionMarkers() {
+  Object.entries(markers).forEach(([filename, marker]) => {
+    const element = marker.getElement();
+    if (!element) return;
+
+    element.classList.toggle('selected-marker', state.selectedSet.has(filename));
+    element.classList.toggle('is-preview', state.selectedImage === filename);
+
+    if (state.selectedSet.has(filename)) {
+      marker.setZIndexOffset(state.selectedImage === filename ? 900 : 500);
+    } else {
+      marker.setZIndexOffset(0);
+    }
+  });
+
+  if (state.selectedImage && markers[state.selectedImage]) {
+    markers[state.selectedImage].openPopup();
+  }
 }
 
 // Select all / clear
@@ -1266,6 +1315,68 @@ let chainageMarkerLayer = null;
 let chainageMap = {};  // filename -> {valid, chainage_m, offset_m, offset_side, formatted}
 let lineActive = false;
 let lastLineGeojson = null;     // cached {geojson_line, markers_geojson} for re-rendering
+let activeLineTotalLengthExactM = null;
+
+function _toFiniteNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function _haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = deg => deg * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+function _geojsonLineLengthMeters(geojsonLine) {
+  const coords = geojsonLine?.geometry?.coordinates;
+  if (!Array.isArray(coords) || coords.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const prev = coords[i - 1];
+    const cur = coords[i];
+    if (!Array.isArray(prev) || !Array.isArray(cur) || prev.length < 2 || cur.length < 2) {
+      continue;
+    }
+    total += _haversineMeters(prev[1], prev[0], cur[1], cur[0]);
+  }
+  return total > 0 ? total : null;
+}
+
+function _formatChainageExact(chainageM, prefix) {
+  const n = _toFiniteNumber(chainageM);
+  if (n == null) return '-';
+  const cm = Math.max(0, n);
+  const km = Math.floor(cm / 1000);
+  const m = (cm - km * 1000).toFixed(3).padStart(7, '0');
+  return `${prefix} ${km}+${m}`;
+}
+
+function updateLastChainageExactInfo() {
+  const el = document.getElementById('chainage-last-exact');
+  const mapEl = document.getElementById('map-chainage-summary');
+  if (!lineActive || activeLineTotalLengthExactM == null) {
+    el.textContent = 'Last chainage (exact): -';
+    mapEl.textContent = 'Last chainage: -';
+    return;
+  }
+  const startM = parseFloat(document.getElementById('s-chainage-start-m').value) || 0;
+  const prefixInput = document.getElementById('s-chainage-prefix').value || 'kp';
+  const prefix = prefixInput.trim() || 'kp';
+  const exactChainageM = startM + activeLineTotalLengthExactM;
+  if (!Number.isFinite(exactChainageM)) {
+    el.textContent = 'Last chainage (exact): -';
+    mapEl.textContent = 'Last chainage: -';
+    return;
+  }
+  const formatted = _formatChainageExact(exactChainageM, prefix);
+  el.textContent = `Last chainage (exact): ${formatted} (${exactChainageM.toFixed(3)} m)`;
+  mapEl.textContent = `Last chainage: ${formatted}`;
+}
 
 function switchCenterTab(tab) {
   // No tabs anymore — just ensure map is initialised when needed
@@ -1343,6 +1454,8 @@ async function refreshMapLocations() {
     if (bounds.length > 0) {
       map.fitBounds(bounds, { padding: [50, 50] });
     }
+
+    updateMapSelectionMarkers();
     
     updateMapControls();
   } catch (e) {
@@ -1353,6 +1466,7 @@ async function refreshMapLocations() {
 function selectImageFromMap(filename) {
   state.selectedImage = filename;
   updateImageList();
+  updateMapSelectionMarkers();
   highlightSelectedMarker();
   updateMapControls();
 }
@@ -1366,7 +1480,6 @@ function highlightSelectedMarker() {
   // Highlight selected
   if (state.selectedImage && markers[state.selectedImage]) {
     markers[state.selectedImage].setOpacity(0.6);
-    markers[state.selectedImage].openPopup();
   }
 }
 
@@ -1561,10 +1674,13 @@ async function applyLine() {
     }
     const d = await res.json();
     lineActive = true;
+    activeLineTotalLengthExactM =
+      _toFiniteNumber(d.total_length_exact_m) ?? _geojsonLineLengthMeters(d.geojson_line);
     document.getElementById('btn-clear-line').disabled = false;
     const lenKm = (d.total_length_m / 1000).toFixed(2);
     document.getElementById('line-status').textContent =
       `EPSG:${d.epsg}  |  Length: ${lenKm} km`;
+    updateLastChainageExactInfo();
     setStatus(`Line applied — ${d.total_length_m.toFixed(0)} m | EPSG:${d.epsg}`, 'ok');
 
     // Render on map (switch to map tab if needed)
@@ -1588,6 +1704,7 @@ async function clearLine() {
     await fetch('/api/clear-line', {method: 'DELETE'});
   } catch (_) {}
   lineActive = false;
+  activeLineTotalLengthExactM = null;
   chainageMap = {};
   if (map) {
     if (lineLayer) { map.removeLayer(lineLayer); lineLayer = null; }
@@ -1598,6 +1715,7 @@ async function clearLine() {
     });
   }
   document.getElementById('line-status').textContent = '';
+  updateLastChainageExactInfo();
   document.getElementById('btn-clear-line').disabled = true;
   setStatus('Reference line cleared', 'info');
 }
@@ -1681,8 +1799,10 @@ document.getElementById('s-chainage-interval').addEventListener('change', () => 
   if (lineActive) applyLine();
 });
 document.getElementById('s-chainage-start-m').addEventListener('change', () => {
+  updateLastChainageExactInfo();
   if (lineActive) applyLine();
 });
+document.getElementById('s-chainage-prefix').addEventListener('input', updateLastChainageExactInfo);
 // Re-render markers with updated label interval (no server round-trip needed)
 document.getElementById('s-chainage-label-interval').addEventListener('change', () => {
   if (lineActive && lastLineGeojson) {
