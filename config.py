@@ -60,6 +60,7 @@ SHOW_CHAINAGE = False         # Show chainage (stationing) from a reference line
 CHAINAGE_PREFIX = "kp"        # Text prefix for chainage (e.g. "kp", "sta", "m")
 CHAINAGE_PRECISION = 1        # Round chainage to nearest N metres (must be ≥ 1)
 SHOW_CHAINAGE_OFFSET = False  # Append L/R perpendicular offset to the chainage text
+CHAINAGE_START_M = 0.0        # Offset added to all chainage values before display (e.g. 1500 to start at km 1+500)
 
 
 def validate_config():
