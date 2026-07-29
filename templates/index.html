@@ -318,36 +318,48 @@
 
     /* Output dir label */
     .output-label { font-size: .75rem; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+
+    /* ── Geocode progress ── */
+    #geocode-badge {
+      display: none;
+      align-items: center;
+      gap: 5px;
+      font-size: .72rem;
+      color: var(--accent2);
+      margin-left: 6px;
+    }
+    #geocode-badge.visible { display: inline-flex; }
+    #geocode-badge .geo-spinner {
+      width: 10px; height: 10px;
+      border: 1.5px solid var(--border);
+      border-top-color: var(--accent2);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+    #geocode-bar-wrap {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    #geocode-bar-wrap.visible { display: flex; }
+    #geocode-bar-wrap .geo-icon { font-size: .8rem; }
+    #geocode-bar-wrap progress {
+      width: 90px;
+      height: 6px;
+      accent-color: var(--accent2);
+    }
+    #geocode-bar-label { font-size: .72rem; color: var(--accent2); white-space: nowrap; }
     
     /* ── Map styles ── */
-    .center-tabs {
-      display: flex;
-      gap: 0;
-      background: var(--panel);
-      border-bottom: 1px solid var(--border);
-    }
-    .center-tab {
-      padding: 8px 16px;
-      background: none;
-      border: none;
-      color: var(--muted);
-      cursor: pointer;
-      font-size: .82rem;
-      border-bottom: 2px solid transparent;
-      transition: all .2s;
-    }
-    .center-tab:hover { color: var(--text); }
-    .center-tab.active {
-      color: var(--accent);
-      border-bottom-color: var(--accent);
-    }
-    
     #map-container {
       flex: 1;
       position: relative;
-      display: none;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }
-    #map-container.active { display: block; }
     
     #map {
       width: 100%;
@@ -355,12 +367,13 @@
     }
     
     #preview-container-wrapper {
-      flex: 1;
+      height: 50%;
+      min-height: 120px;
       display: flex;
       flex-direction: column;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
-    #preview-container-wrapper.active { display: flex; }
-    #preview-container-wrapper:not(.active) { display: none; }
     
     .map-controls {
       position: absolute;
@@ -388,6 +401,23 @@
     .edited-marker {
       filter: hue-rotate(90deg) brightness(1.2);
     }
+
+    /* ── Chainage / line styles ── */
+    .chainage-tooltip {
+      background: rgba(20, 30, 50, 0.85) !important;
+      border: 1px solid #ff8c00 !important;
+      border-radius: 3px !important;
+      color: #ff8c00 !important;
+      font-size: .7rem !important;
+      padding: 2px 5px !important;
+      white-space: nowrap;
+    }
+    .chainage-tooltip::before { display: none !important; }
+    #line-status { font-size: .72rem; color: var(--accent2); padding: 2px 0; min-height: 16px; }
+    .sosi-load-row { display: flex; gap: 5px; align-items: flex-end; }
+    .sosi-load-row input { flex: 1; }
+    .sosi-load-row .btn { flex-shrink: 0; }
+    .sosi-or-divider { text-align: center; color: var(--muted); font-size: .72rem; padding: 2px 0; }
   </style>
 </head>
 <body>
@@ -534,18 +564,76 @@
         </div>
       </details>
 
+      <details>
+        <summary>Line / Chainage</summary>
+        <div class="settings-body">
+          <!-- Load from path -->
+          <label>SOSI file path</label>
+          <div class="sosi-load-row">
+            <input type="text" id="s-sosi-path" placeholder="C:\path\to\file.sos" style="background:var(--input-bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:.82rem;padding:5px 8px;outline:none;" />
+            <button class="btn" id="btn-load-sosi-path" style="padding:5px 10px;font-size:.78rem">Load</button>
+          </div>
+          <div class="sosi-or-divider">— or upload —</div>
+          <div class="sosi-load-row">
+            <label style="flex:1;margin:0">
+              <input type="file" id="s-sosi-upload" accept=".sos,.sosi" style="background:var(--input-bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:.78rem;padding:4px 6px;outline:none;width:100%;" />
+            </label>
+            <button class="btn" id="btn-upload-sosi" style="padding:5px 10px;font-size:.78rem">Upload</button>
+          </div>
+          <!-- Kurve select -->
+          <label>Select line (KURVE)
+            <select id="s-kurve-select" disabled>
+              <option value="">— load a SOSI file first —</option>
+            </select>
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="s-reverse-line" />
+            Reverse line direction
+          </label>
+          <div style="display:flex;gap:5px">
+            <button class="btn btn-accent" id="btn-apply-line" disabled style="flex:1;font-size:.78rem;padding:6px 8px">Apply Line</button>
+            <button class="btn" id="btn-clear-line" disabled style="font-size:.78rem;padding:6px 8px">Clear</button>
+          </div>
+          <div id="line-status"></div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:2px 0" />
+          <!-- Overlay / map options -->
+          <label class="check-row">
+            <input type="checkbox" id="s-show-chainage" />
+            Show chainage on overlay
+          </label>
+          <div class="row">
+            <label>Prefix
+              <input type="text" id="s-chainage-prefix" value="kp" maxlength="10" />
+            </label>
+            <label>Precision (m)
+              <input type="number" id="s-chainage-precision" value="1" min="1" max="1000" />
+            </label>
+          </div>
+          <label class="check-row">
+            <input type="checkbox" id="s-show-chainage-offset" />
+            Show L/R offset
+          </label>
+          <label>Chainage start offset (m)
+            <input type="number" id="s-chainage-start-m" value="0" min="-999999" max="999999" step="1" title="Value added to all chainage numbers (e.g. 1500 to start at km 1+500)" />
+          </label>
+          <div class="row">
+            <label>Map tick interval (m)
+              <input type="number" id="s-chainage-interval" value="25" min="5" max="500" step="5" />
+            </label>
+            <label>Map label interval (m)
+              <input type="number" id="s-chainage-label-interval" value="50" min="10" max="5000" step="10" title="Show chainage label every N metres along the line" />
+            </label>
+          </div>
+        </div>
+      </details>
+
     </div>
   </div>
 
-  <!-- ══ CENTER: Map & Preview ══ -->
+  <!-- ══ CENTER: Preview + Map ══ -->
   <div class="preview-panel">
-    <div class="center-tabs">
-      <button class="center-tab active" id="tab-preview" onclick="switchCenterTab('preview')">Preview</button>
-      <button class="center-tab" id="tab-map" onclick="switchCenterTab('map')">Map</button>
-    </div>
-    
-    <!-- Preview tab content -->
-    <div id="preview-container-wrapper" class="active">
+    <!-- Preview (top, smaller) -->
+    <div id="preview-container-wrapper">
       <div class="preview-toolbar">
         <button class="btn btn-accent" id="btn-preview" disabled>Generate Preview</button>
         <span id="preview-filename">No image selected</span>
@@ -564,7 +652,7 @@
       </div>
     </div>
     
-    <!-- Map tab content -->
+    <!-- Map (below, larger) -->
     <div id="map-container">
       <div id="map"></div>
       <div class="map-controls">
@@ -576,7 +664,7 @@
 
   <!-- ══ RIGHT: Image list ══ -->
   <div class="panel">
-    <div class="panel-title">Images <span id="image-count" style="color:var(--muted);font-weight:400"></span></div>
+    <div class="panel-title">Images <span id="image-count" style="color:var(--muted);font-weight:400"></span><span id="geocode-badge"><span class="geo-spinner"></span><span id="geocode-badge-label"></span></span></div>
     <div class="selection-bar" id="selection-bar">
       <span id="selection-label">0 selected</span>
       <button class="btn btn-amber" id="btn-select-all" style="padding:3px 9px;font-size:.73rem">All</button>
@@ -621,6 +709,13 @@
   <!-- Process selected / all -->
   <button class="btn btn-amber" id="btn-process-selected" disabled>Process Selected</button>
   <button class="btn btn-green" id="btn-process" disabled>Process All</button>
+
+  <!-- Geocode progress (shown while background geocoding runs) -->
+  <div id="geocode-bar-wrap">
+    <span class="geo-icon">📍</span>
+    <progress id="geocode-bar" value="0" max="100"></progress>
+    <span id="geocode-bar-label">–</span>
+  </div>
 
   <!-- Progress + status -->
   <div class="progress-wrap">
@@ -690,6 +785,11 @@ async function loadDefaults() {
     document.getElementById('s-max-workers').value = d.max_workers;
     document.getElementById('folder-path-input').value = d.input_dir || '';
     document.getElementById('output-path-input').value = d.output_dir || '';
+    document.getElementById('s-show-chainage').checked = d.show_chainage || false;
+    document.getElementById('s-chainage-prefix').value = d.chainage_prefix || 'kp';
+    document.getElementById('s-chainage-precision').value = d.chainage_precision || 1;
+    document.getElementById('s-show-chainage-offset').checked = d.show_chainage_offset || false;
+    document.getElementById('s-chainage-start-m').value = d.chainage_start_m || 0;
   } catch (e) {
     console.error('Failed to load defaults', e);
   }
@@ -746,6 +846,11 @@ function gatherSettings() {
     file_collision_mode: document.getElementById('s-file-collision').value,
     max_workers: parseInt(document.getElementById('s-max-workers').value) || 4,
     output_dir: document.getElementById('output-path-input').value,
+    show_chainage: document.getElementById('s-show-chainage').checked,
+    chainage_prefix: document.getElementById('s-chainage-prefix').value || 'kp',
+    chainage_precision: parseInt(document.getElementById('s-chainage-precision').value) || 1,
+    show_chainage_offset: document.getElementById('s-show-chainage-offset').checked,
+    chainage_start_m: parseFloat(document.getElementById('s-chainage-start-m').value) || 0,
   };
 }
 
@@ -882,10 +987,15 @@ document.getElementById('btn-load-folder').addEventListener('click', async () =>
     const d = await res.json();
     populateImageList(d.images, d.source_folder);
     setStatus(`Loaded ${d.images.length} image(s). Address lookup running in background…`, 'ok');
+    startGeocodePolling();
     
     // Refresh map if it exists
     if (map) {
       await refreshMapLocations();
+    }
+    // Recalculate chainages if a line is active
+    if (lineActive) {
+      await fetchAndUpdateChainages();
     }
   } catch (e) {
     setStatus('Error: ' + e.message, 'err');
@@ -912,10 +1022,15 @@ async function handleFiles(fileList) {
     const d = await res.json();
     populateImageList(d.images, d.source_folder);
     setStatus(`Uploaded ${d.images.length} image(s).`, 'ok');
+    startGeocodePolling();
     
     // Refresh map if it exists
     if (map) {
       await refreshMapLocations();
+    }
+    // Recalculate chainages if a line is active
+    if (lineActive) {
+      await fetchAndUpdateChainages();
     }
   } catch (e) {
     setStatus('Upload error: ' + e.message, 'err');
@@ -1068,34 +1183,101 @@ document.getElementById('s-output-quality').addEventListener('input', e => {
 (async () => {
   await loadDefaults();
   await loadFonts();
+  // Init map immediately (no tab click needed)
+  setTimeout(() => { if (!map) initMap(); }, 0);
 })();
+
+// ── Geocode progress polling ──
+let _geocodePollTimer = null;
+let _geocodeDoneShown = false;
+
+function _hideGeocodeBadge() {
+  document.getElementById('geocode-badge').classList.remove('visible');
+  document.getElementById('geocode-bar-wrap').classList.remove('visible');
+  document.getElementById('geocode-badge').querySelector('.geo-spinner').style.display = '';
+}
+
+function _updateGeocodeBadge(running, done, total) {
+  const badge    = document.getElementById('geocode-badge');
+  const badgeLbl = document.getElementById('geocode-badge-label');
+  const barWrap  = document.getElementById('geocode-bar-wrap');
+  const bar      = document.getElementById('geocode-bar');
+  const barLbl   = document.getElementById('geocode-bar-label');
+  const spinner  = badge.querySelector('.geo-spinner');
+
+  if (running) {
+    _geocodeDoneShown = false;
+    badge.classList.add('visible');
+    badgeLbl.textContent = `${done} / ${total}`;
+    spinner.style.display = '';
+    barWrap.classList.add('visible');
+    bar.max = total; bar.value = done;
+    barLbl.textContent = `Addresses ${done} / ${total}`;
+  } else if (done > 0 && total > 0 && !_geocodeDoneShown) {
+    // Show "done" flash once, then auto-hide after 3 s
+    _geocodeDoneShown = true;
+    badge.classList.add('visible');
+    badgeLbl.textContent = `\u2713 ${done} / ${total}`;
+    spinner.style.display = 'none';
+    barWrap.classList.add('visible');
+    bar.max = total; bar.value = done;
+    barLbl.textContent = `Addresses done (${done})`;
+    setTimeout(_hideGeocodeBadge, 3000);
+  }
+  // else: already hidden or done-flash already queued — do nothing
+}
+
+async function _pollGeocodeOnce() {
+  try {
+    const res = await fetch('/api/geocode-progress');
+    if (!res.ok) return false;
+    const d = await res.json();
+    _updateGeocodeBadge(d.running, d.done, d.total);
+    const stillActive = d.running || (d.total > 0 && d.done < d.total);
+    if (!stillActive) {
+      clearInterval(_geocodePollTimer);
+      _geocodePollTimer = null;
+    }
+    return stillActive;
+  } catch (_) { return false; }
+}
+
+function startGeocodePolling() {
+  _geocodeDoneShown = false;
+  if (_geocodePollTimer) { clearInterval(_geocodePollTimer); _geocodePollTimer = null; }
+  // First poll after 300 ms to let the background task register
+  setTimeout(async () => {
+    const stillActive = await _pollGeocodeOnce();
+    // Keep polling only if geocoding is still in progress after first check
+    if (stillActive && !_geocodePollTimer) {
+      _geocodePollTimer = setInterval(_pollGeocodeOnce, 800);
+    }
+  }, 300);
+}
 
 // ── Map & Location Management ──
 let map = null;
 let markers = {};  // filename -> marker
 let imageLocations = {};  // filename -> {lat, lon, has_gps, edited}
 
+// ── Chainage / line state ──
+let lineLayer = null;
+let chainageMarkerLayer = null;
+let chainageMap = {};  // filename -> {valid, chainage_m, offset_m, offset_side, formatted}
+let lineActive = false;
+let lastLineGeojson = null;     // cached {geojson_line, markers_geojson} for re-rendering
+
 function switchCenterTab(tab) {
-  const tabs = document.querySelectorAll('.center-tab');
-  const preview = document.getElementById('preview-container-wrapper');
-  const mapContainer = document.getElementById('map-container');
-  
-  tabs.forEach(t => t.classList.remove('active'));
-  
-  if (tab === 'map') {
-    document.getElementById('tab-map').classList.add('active');
-    preview.classList.remove('active');
-    mapContainer.classList.add('active');
-    
-    if (!map) {
-      initMap();
-    } else {
-      map.invalidateSize();
+  // No tabs anymore — just ensure map is initialised when needed
+  if (!map) {
+    initMap();
+    if (lineActive) {
+      fetch('/api/line-geometry').then(r => r.ok ? r.json() : null).then(d => {
+        if (d) renderLine(d.geojson_line, d.markers_geojson);
+      });
     }
   } else {
-    document.getElementById('tab-preview').classList.add('active');
-    mapContainer.classList.remove('active');
-    preview.classList.add('active');
+    map.invalidateSize();
   }
 }
 
@@ -1107,8 +1289,14 @@ function initMap() {
     maxZoom: 19
   }).addTo(map);
   
-  // Load and display image locations
-  refreshMapLocations();
+  // Load image locations (and the active line if one is set)
+  refreshMapLocations().then(() => {
+    if (lineActive) {
+      fetch('/api/line-geometry').then(r => r.ok ? r.json() : null).then(d => {
+        if (d) renderLine(d.geojson_line, d.markers_geojson);
+      });
+    }
+  });
 }
 
 async function refreshMapLocations() {
@@ -1136,9 +1324,7 @@ async function refreshMapLocations() {
           title: loc.filename
         });
         
-        marker.bindPopup(`<strong>${loc.filename}</strong><br>
-          ${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}<br>
-          ${loc.address || 'No address'}`);
+        marker.bindPopup(_buildMarkerPopup(loc));
         
         marker.on('click', () => selectImageFromMap(loc.filename));
         marker.on('dragend', (e) => onMarkerDrag(loc.filename, e.target.getLatLng()));
@@ -1272,6 +1458,237 @@ document.getElementById('btn-reset-location').addEventListener('click', () => {
 });
 
 document.getElementById('btn-reset-all-locations').addEventListener('click', resetAllLocations);
+
+// ── SOSI Line / Chainage ──
+
+function _buildMarkerPopup(loc) {
+  const ch = chainageMap[loc.filename];
+  const chText = ch ? `<br><span style="color:#ff8c00">${ch.formatted}</span>` : '';
+  return `<strong>${loc.filename}</strong><br>
+    ${(loc.lat||0).toFixed(6)}, ${(loc.lon||0).toFixed(6)}<br>
+    ${loc.address || 'No address'}${chText}`;
+}
+
+function _populateKurveDropdown(kurves) {
+  const sel = document.getElementById('s-kurve-select');
+  sel.innerHTML = '';
+  if (!kurves || kurves.length === 0) {
+    sel.innerHTML = '<option value="">— no KURVEs found —</option>';
+    sel.disabled = true;
+    document.getElementById('btn-apply-line').disabled = true;
+    return;
+  }
+  for (const k of kurves) {
+    const opt = document.createElement('option');
+    opt.value = k.id;
+    const name = k.objtype ? `${k.objtype}` : k.object_type;
+    opt.textContent = `ID ${k.id} — ${name} (${k.coord_count} pts, ~${Math.round(k.length_m)} m)`;
+    sel.appendChild(opt);
+  }
+  sel.disabled = false;
+  document.getElementById('btn-apply-line').disabled = false;
+}
+
+async function loadSosiFromPath() {
+  const path = document.getElementById('s-sosi-path').value.trim();
+  if (!path) { setStatus('Enter a SOSI file path first', 'err'); return; }
+  setStatus('Loading SOSI file…', 'info');
+  try {
+    const res = await fetch('/api/load-sosi-line-path', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      setStatus(err.detail || 'Failed to load SOSI file', 'err');
+      return;
+    }
+    const d = await res.json();
+    _populateKurveDropdown(d.kurves);
+    document.getElementById('line-status').textContent =
+      `${d.kurves.length} KURVE(s) found in file`;
+    setStatus('SOSI file loaded — select a KURVE and click Apply Line', 'ok');
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'err');
+  }
+}
+
+async function uploadSosiFile() {
+  const fileInput = document.getElementById('s-sosi-upload');
+  if (!fileInput.files || fileInput.files.length === 0) {
+    setStatus('Select a SOSI file to upload first', 'err');
+    return;
+  }
+  setStatus('Uploading SOSI file…', 'info');
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  try {
+    const res = await fetch('/api/upload-sosi-line', {method: 'POST', body: formData});
+    if (!res.ok) {
+      const err = await res.json();
+      setStatus(err.detail || 'Upload failed', 'err');
+      return;
+    }
+    const d = await res.json();
+    _populateKurveDropdown(d.kurves);
+    document.getElementById('line-status').textContent =
+      `${d.kurves.length} KURVE(s) found in uploaded file`;
+    setStatus('SOSI file uploaded — select a KURVE and click Apply Line', 'ok');
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'err');
+  }
+}
+
+async function applyLine() {
+  const sel = document.getElementById('s-kurve-select');
+  const objectId = parseInt(sel.value);
+  if (isNaN(objectId)) { setStatus('Select a KURVE first', 'err'); return; }
+  const reverse = document.getElementById('s-reverse-line').checked;
+  const intervalM = parseFloat(document.getElementById('s-chainage-interval').value) || 25;
+  const startM = parseFloat(document.getElementById('s-chainage-start-m').value) || 0;
+  setStatus('Building line geometry…', 'info');
+  try {
+    const res = await fetch('/api/select-kurve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({object_id: objectId, reverse, interval_m: intervalM, start_m: startM}),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      setStatus(err.detail || 'Failed to apply line', 'err');
+      return;
+    }
+    const d = await res.json();
+    lineActive = true;
+    document.getElementById('btn-clear-line').disabled = false;
+    const lenKm = (d.total_length_m / 1000).toFixed(2);
+    document.getElementById('line-status').textContent =
+      `EPSG:${d.epsg}  |  Length: ${lenKm} km`;
+    setStatus(`Line applied — ${d.total_length_m.toFixed(0)} m | EPSG:${d.epsg}`, 'ok');
+
+    // Render on map (switch to map tab if needed)
+    if (!map) {
+      switchCenterTab('map');
+    } else {
+      renderLine(d.geojson_line, d.markers_geojson);
+    }
+
+    // Recalculate chainages for loaded images
+    if (state.sourceFolder) {
+      await fetchAndUpdateChainages();
+    }
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'err');
+  }
+}
+
+async function clearLine() {
+  try {
+    await fetch('/api/clear-line', {method: 'DELETE'});
+  } catch (_) {}
+  lineActive = false;
+  chainageMap = {};
+  if (map) {
+    if (lineLayer) { map.removeLayer(lineLayer); lineLayer = null; }
+    if (chainageMarkerLayer) { map.removeLayer(chainageMarkerLayer); chainageMarkerLayer = null; }
+    // Rebuild marker popups without chainage
+    Object.entries(markers).forEach(([filename, marker]) => {
+      if (imageLocations[filename]) marker.bindPopup(_buildMarkerPopup(imageLocations[filename]));
+    });
+  }
+  document.getElementById('line-status').textContent = '';
+  document.getElementById('btn-clear-line').disabled = true;
+  setStatus('Reference line cleared', 'info');
+}
+
+function renderLine(geojsonLine, markersGeojson) {
+  if (!map) return;
+  // Cache for label-interval re-renders
+  lastLineGeojson = {geojson_line: geojsonLine, markers_geojson: markersGeojson};
+  if (lineLayer) { map.removeLayer(lineLayer); lineLayer = null; }
+  if (chainageMarkerLayer) { map.removeLayer(chainageMarkerLayer); chainageMarkerLayer = null; }
+  if (!geojsonLine) return;
+
+  // Draw polyline
+  const coords = geojsonLine.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+  lineLayer = L.polyline(coords, {color: '#ff8c00', weight: 3, opacity: 0.85}).addTo(map);
+
+  // Draw chainage tick markers
+  if (markersGeojson && markersGeojson.features && markersGeojson.features.length > 0) {
+    const labelIntervalM = parseFloat(document.getElementById('s-chainage-label-interval').value) || 50;
+    chainageMarkerLayer = L.layerGroup();
+    markersGeojson.features.forEach((f) => {
+      const [lon, lat] = f.geometry.coordinates;
+      const label = f.properties.label;
+      const rawChainage = f.properties.chainage_m;
+      const circle = L.circleMarker([lat, lon], {
+        radius: 3, color: '#ff8c00', fillColor: '#ff8c00',
+        fillOpacity: 1.0, weight: 1,
+      });
+      // Show label when raw chainage is a multiple of the label interval
+      if (rawChainage % labelIntervalM < 0.1) {
+        circle.bindTooltip(label, {
+          permanent: true, direction: 'right',
+          className: 'chainage-tooltip', offset: [4, 0]
+        });
+      }
+      chainageMarkerLayer.addLayer(circle);
+    });
+    chainageMarkerLayer.addTo(map);
+  }
+}
+
+async function fetchAndUpdateChainages() {
+  if (!lineActive || !state.sourceFolder) return;
+  const precision = parseInt(document.getElementById('s-chainage-precision').value) || 1;
+  const prefix = document.getElementById('s-chainage-prefix').value || 'kp';
+  const showOffset = document.getElementById('s-show-chainage-offset').checked;
+  const startM = parseFloat(document.getElementById('s-chainage-start-m').value) || 0;
+  try {
+    const res = await fetch('/api/calculate-chainages', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        source_folder: state.sourceFolder,
+        precision, prefix, show_offset: showOffset, start_m: startM,
+      }),
+    });
+    if (!res.ok) return;
+    const d = await res.json();
+    chainageMap = d.chainages || {};
+    // Update all open popups
+    Object.entries(markers).forEach(([filename, marker]) => {
+      if (imageLocations[filename]) {
+        marker.bindPopup(_buildMarkerPopup(imageLocations[filename]));
+      }
+    });
+  } catch (e) {
+    console.error('Failed to calculate chainages:', e);
+  }
+}
+
+document.getElementById('btn-load-sosi-path').addEventListener('click', loadSosiFromPath);
+document.getElementById('s-sosi-path').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadSosiFromPath();
+});
+document.getElementById('btn-upload-sosi').addEventListener('click', uploadSosiFile);
+document.getElementById('btn-apply-line').addEventListener('click', applyLine);
+document.getElementById('btn-clear-line').addEventListener('click', clearLine);
+
+// Re-apply line with new interval/start when these inputs change
+document.getElementById('s-chainage-interval').addEventListener('change', () => {
+  if (lineActive) applyLine();
+});
+document.getElementById('s-chainage-start-m').addEventListener('change', () => {
+  if (lineActive) applyLine();
+});
+// Re-render markers with updated label interval (no server round-trip needed)
+document.getElementById('s-chainage-label-interval').addEventListener('change', () => {
+  if (lineActive && lastLineGeojson) {
+    renderLine(lastLineGeojson.geojson_line, lastLineGeojson.markers_geojson);
+  }
+});
 
 </script>
 
