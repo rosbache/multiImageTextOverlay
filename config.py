@@ -55,6 +55,12 @@ FILE_COLLISION_MODE = 'overwrite' # Options: 'overwrite', 'skip', 'rename'
 SHOW_ADDRESS = True            # Show nearest address (street + city) from GPS coordinates
 GEOCODER_TIMEOUT = 10           # Timeout in seconds for geocoding requests
 
+# Chainage / reference line settings
+SHOW_CHAINAGE = False         # Show chainage (stationing) from a reference line in overlay
+CHAINAGE_PREFIX = "kp"        # Text prefix for chainage (e.g. "kp", "sta", "m")
+CHAINAGE_PRECISION = 1        # Round chainage to nearest N metres (must be ≥ 1)
+SHOW_CHAINAGE_OFFSET = False  # Append L/R perpendicular offset to the chainage text
+
 
 def validate_config():
     """
@@ -124,5 +130,9 @@ def validate_config():
     # Validate project info
     if PROJECT_INFO is not None and not isinstance(PROJECT_INFO, str):
         raise ValueError("PROJECT_INFO must be a string or None")
-    
+
+    # Validate chainage settings
+    if not isinstance(CHAINAGE_PRECISION, (int, float)) or CHAINAGE_PRECISION < 1:
+        raise ValueError("CHAINAGE_PRECISION must be a number ≥ 1")
+
     return True
