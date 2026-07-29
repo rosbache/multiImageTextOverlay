@@ -847,6 +847,7 @@ async def select_kurve(req: SelectKurveRequest):
         "geojson_line": geojson_line,
         "markers_geojson": markers_geojson,
         "total_length_m": round(line.total_length, 1),
+        "total_length_exact_m": line.total_length,
         "epsg": line.epsg,
         "object_id": line.object_id,
         "object_type": line.object_type,
@@ -873,6 +874,7 @@ async def get_line_geometry(interval_m: float = 25.0, start_m: float = 0.0):
         "geojson_line": active_line["geojson_line"],
         "markers_geojson": markers,
         "total_length_m": round(active_line["line"].total_length, 1),
+        "total_length_exact_m": active_line["line"].total_length,
         "epsg": active_line["line"].epsg,
     }
 
