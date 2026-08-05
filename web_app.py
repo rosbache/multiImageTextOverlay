@@ -1,7 +1,7 @@
 """
 FastAPI Web Interface for Image Metadata Overlay
 
-Starts with: uvicorn web_app:app --reload
+Starts with: uvicorn web_app:app --host 127.0.0.1 --port 8000
 Then open:   http://localhost:8000
 """
 
@@ -192,6 +192,16 @@ def _get_jpg_files(folder: str) -> list[Path]:
         f for f in Path(folder).iterdir()
         if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg")
     ]
+
+
+def _build_image_summary(jpg_files: list[Path]) -> dict[str, Any]:
+    """Return simple metadata for a scanned image set."""
+    total_size_bytes = sum(f.stat().st_size for f in jpg_files if f.is_file())
+    return {
+        "count": len(jpg_files),
+        "total_size_bytes": total_size_bytes,
+        "total_size_mb": round(total_size_bytes / (1024 * 1024), 2),
+    }
 
 
 async def _geocode_images(jpg_files: list[Path], timeout: int):
@@ -404,7 +414,7 @@ async def load_folder(req: FolderRequest, background_tasks: BackgroundTasks):
 
     jpg_files = _get_jpg_files(str(folder))
     if not jpg_files:
-        return {"source_folder": str(folder), "images": []}
+        return {"source_folder": str(folder), "images": [], "summary": _build_image_summary([])}
 
     # Pre-initialise progress so the first poll sees it immediately
     reversegeocodeProgress["running"] = True
@@ -419,6 +429,7 @@ async def load_folder(req: FolderRequest, background_tasks: BackgroundTasks):
     return {
         "source_folder": str(folder),
         "images": [f.name for f in sorted(jpg_files)],
+        "summary": _build_image_summary(jpg_files),
     }
 
 
@@ -459,6 +470,7 @@ async def upload_images(background_tasks: BackgroundTasks, files: list[UploadFil
     return {
         "source_folder": str(session_dir),
         "images": sorted(saved),
+        "summary": _build_image_summary(jpg_files),
     }
 
 
@@ -476,26 +488,46 @@ async def get_image_locations(source_folder: str):
     
     for jpg_file in jpg_files:
         filename = jpg_file.name
-        meta = extract_exif_data(str(jpg_file), filename=filename)
-        
-        # Check for override first
-        if filename in location_overrides:
-            override = location_overrides[filename]
-            lat = override['lat']
-            lon = override['lon']
-            has_gps = True
-            edited = override.get('edited', True)
-        else:
-            lat = meta.get('_lat_decimal')
-            lon = meta.get('_lon_decimal')
-            has_gps = lat is not None and lon is not None
-            edited = False
-        
-        # Get cached address if available
+        lat = None
+        lon = None
+        has_gps = False
+        edited = False
         address = None
-        if has_gps:
-            key = (round(lat, 6), round(lon, 6))
-            address = address_cache.get(key)
+        status = "missing"
+        status_detail = "No GPS coordinates found in the image metadata."
+
+        try:
+            meta = extract_exif_data(str(jpg_file), filename=filename)
+        except Exception as exc:
+            status = "error"
+            status_detail = f"Could not read EXIF metadata: {exc}"
+        else:
+            # Check for override first
+            if filename in location_overrides:
+                override = location_overrides[filename]
+                lat = override['lat']
+                lon = override['lon']
+                has_gps = True
+                edited = override.get('edited', True)
+                status = "edited" if edited else "manual"
+                status_detail = "Manual location override applied."
+            else:
+                lat = meta.get('_lat_decimal')
+                lon = meta.get('_lon_decimal')
+                has_gps = lat is not None and lon is not None
+                edited = False
+
+            if has_gps:
+                key = (round(lat, 6), round(lon, 6))
+                address = address_cache.get(key)
+                status = "geolocated"
+                status_detail = "GPS coordinates available."
+                if address is None:
+                    status = "address-pending"
+                    status_detail = "Coordinates available, address lookup pending or unavailable."
+            else:
+                status = "missing"
+                status_detail = "No GPS coordinates found in the image metadata."
         
         locations.append({
             "filename": filename,
@@ -503,7 +535,9 @@ async def get_image_locations(source_folder: str):
             "lon": lon,
             "has_gps": has_gps,
             "edited": edited,
-            "address": address
+            "address": address,
+            "status": status,
+            "status_detail": status_detail,
         })
     
     return {"locations": locations}
