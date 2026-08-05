@@ -203,13 +203,21 @@
     .img-item.active { border-color: var(--accent); background: #1a0e20; }
     .img-item.selected { border-color: #e9a020; background: #1a1400; }
     .img-item.active.selected { border-color: var(--accent); background: #2a1010; }
-    .img-item .check { display: inline-block; width: 13px; height: 13px; border: 1.5px solid var(--muted); border-radius: 3px; margin-right: 7px; flex-shrink: 0; vertical-align: middle; position: relative; top: -1px; }
+    .img-item { display: flex; align-items: center; gap: 6px; }
+    .img-item .check { display: inline-block; width: 13px; height: 13px; border: 1.5px solid var(--muted); border-radius: 3px; margin-right: 2px; flex-shrink: 0; vertical-align: middle; position: relative; top: -1px; }
+    .img-item .item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
     .img-item.selected .check { background: #e9a020; border-color: #e9a020; }
     .img-item.selected .check::after { content: ''; position: absolute; left: 3px; top: 0px; width: 5px; height: 8px; border: 2px solid #000; border-top: none; border-left: none; transform: rotate(45deg); }
     .selection-bar { display: none; align-items: center; gap: 6px; padding: 6px 12px; background: #1a1400; border-bottom: 1px solid #e9a02040; flex-shrink: 0; }
     .selection-bar.visible { display: flex; }
     .selection-bar span { font-size: .75rem; color: #e9a020; flex: 1; }
     .no-images { color: var(--muted); font-size: .8rem; text-align: center; padding: 20px 10px; }
+    .folder-summary { color: var(--accent2); font-size: .75rem; padding: 0 2px 8px; line-height: 1.4; }
+    .geo-status-pill { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: .68rem; color: var(--muted); }
+    .geo-status-pill.ok { color: var(--success); }
+    .geo-status-pill.warn { color: var(--warning); }
+    .geo-status-pill.err { color: var(--error); }
+    .geo-status-summary { font-size: .75rem; color: var(--muted); padding: 0 2px 8px; line-height: 1.4; }
 
     /* ── Bottom bar ── */
     .bottombar {
@@ -661,8 +669,10 @@
     <div id="preview-container-wrapper">
       <div class="preview-toolbar">
         <button class="btn btn-accent" id="btn-preview" disabled>Generate Preview</button>
+        <button class="btn" id="btn-copy-coords" disabled title="Copy selected image coordinates">Copy Coords</button>
         <span id="preview-filename">No image selected</span>
       </div>
+      <div id="preview-location-status" class="geo-status-summary" style="padding: 6px 14px 8px; display:none"></div>
       <div class="preview-container">
         <div class="preview-placeholder" id="preview-placeholder">
           <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
@@ -697,6 +707,8 @@
       <button class="btn" id="btn-clear-selection" style="padding:3px 9px;font-size:.73rem">Clear</button>
     </div>
     <div class="panel-scroll">
+      <div id="folder-summary" class="folder-summary" style="display:none"></div>
+      <div id="geo-summary" class="geo-status-summary" style="display:none"></div>
       <div id="image-list">
         <p class="no-images">Load a folder or upload files to begin.</p>
       </div>
@@ -759,9 +771,12 @@ let state = {
   images: [],
   selectedImage: null,     // for preview
   selectedSet: new Set(),  // for processing
+  lastSelectionAnchor: null,
   jobId: null,
   sseSource: null,
 };
+
+let previewDebounceTimer = null;
 
 // ── Helpers ──
 function rgb2hex(r, g, b) {
@@ -899,17 +914,111 @@ function updateSelectionUI() {
   updateMapSelectionMarkers();
 }
 
+function selectAllImages() {
+  state.selectedSet = new Set(state.images);
+  document.querySelectorAll('.img-item').forEach(el => el.classList.add('selected'));
+  updateSelectionUI();
+}
+
+function clearSelection() {
+  state.selectedSet.clear();
+  document.querySelectorAll('.img-item').forEach(el => el.classList.remove('selected'));
+  updateSelectionUI();
+}
+
+function schedulePreviewUpdate() {
+  if (!state.selectedImage) return;
+  if (previewDebounceTimer) clearTimeout(previewDebounceTimer);
+  previewDebounceTimer = setTimeout(() => {
+    previewSelectedImage({ quiet: true });
+  }, 350);
+}
+
+function formatSummary(summary) {
+  if (!summary) return '';
+  const count = summary.count ?? 0;
+  const mb = (summary.total_size_mb ?? 0).toFixed(2);
+  return `${count} image${count === 1 ? '' : 's'} • ${mb} MB`;
+}
+
+function updateFolderSummary(summary) {
+  const el = document.getElementById('folder-summary');
+  if (!summary || summary.count === 0) {
+    el.style.display = 'none';
+    el.textContent = '';
+    return;
+  }
+  el.style.display = 'block';
+  el.textContent = formatSummary(summary);
+}
+
+function updateGeoSummary() {
+  const el = document.getElementById('geo-summary');
+  const previewEl = document.getElementById('preview-location-status');
+  const locations = Object.values(imageLocations);
+  if (!locations.length) {
+    el.style.display = 'none';
+    previewEl.style.display = 'none';
+    previewEl.textContent = '';
+    return;
+  }
+
+  const withGps = locations.filter(loc => loc.has_gps && loc.lat != null && loc.lon != null).length;
+  const edited = locations.filter(loc => loc.edited).length;
+  const missing = locations.filter(loc => !loc.has_gps || loc.lat == null || loc.lon == null).length;
+  const summaryText = `${withGps} geolocated • ${edited} edited • ${missing} missing`;
+  el.style.display = 'block';
+  el.textContent = summaryText;
+
+  if (state.selectedImage) {
+    const loc = imageLocations[state.selectedImage];
+    if (loc) {
+      previewEl.style.display = 'block';
+      if (loc.edited) {
+        previewEl.textContent = `${state.selectedImage}: manual location override applied`;
+        previewEl.className = 'geo-status-summary ok';
+      } else if (loc.status === 'error') {
+        previewEl.textContent = `${state.selectedImage}: could not read EXIF metadata`;
+        previewEl.className = 'geo-status-summary err';
+      } else if (loc.has_gps && loc.lat != null && loc.lon != null) {
+        previewEl.textContent = `${state.selectedImage}: coordinates available${loc.status === 'address-pending' ? ' — address lookup pending' : ''}`;
+        previewEl.className = 'geo-status-summary ok';
+      } else {
+        previewEl.textContent = `${state.selectedImage}: no coordinates available`;
+        previewEl.className = 'geo-status-summary warn';
+      }
+    }
+  } else {
+    previewEl.style.display = 'none';
+    previewEl.textContent = '';
+  }
+}
+
+function updatePreviewToolbar() {
+  const btn = document.getElementById('btn-copy-coords');
+  const hasCoords = Boolean(
+    state.selectedImage &&
+    imageLocations[state.selectedImage]?.lat != null &&
+    imageLocations[state.selectedImage]?.lon != null
+  );
+  btn.disabled = !hasCoords;
+}
+
 // ── Populate image list ──
-function populateImageList(images, sourceFolder) {
+function populateImageList(images, sourceFolder, summary) {
   state.images = images;
   state.sourceFolder = sourceFolder;
   state.selectedImage = null;
   state.selectedSet.clear();
+  state.lastSelectionAnchor = null;
 
   const list = document.getElementById('image-list');
   list.innerHTML = '';
   document.getElementById('image-count').textContent = `(${images.length})`;
   updateSelectionUI();
+  updateFolderSummary(summary);
+  updatePreviewToolbar();
+  updateGeoSummary();
 
   if (images.length === 0) {
     list.innerHTML = '<p class="no-images">No JPG images found.</p>';
@@ -922,7 +1031,7 @@ function populateImageList(images, sourceFolder) {
     div.className = 'img-item';
     // checkbox indicator + name + edit indicator
     const editIndicator = '<span class="edit-indicator" style="display:none;color:var(--warning);margin-left:4px;" title="Location edited">📍</span>';
-    div.innerHTML = `<span class="check"></span>${name}${editIndicator}`;
+    div.innerHTML = `<span class="check"></span><span class="item-name">${name}</span>${editIndicator}<span class="geo-status-pill" data-status="missing">Missing</span>`;
     div.title = name;
     div.dataset.name = name;
     div.addEventListener('click', e => handleItemClick(name, div, e));
@@ -933,9 +1042,9 @@ function populateImageList(images, sourceFolder) {
 }
 
 function handleItemClick(name, el, e) {
-  // Ctrl/Cmd or Shift toggles selection; plain click sets preview target
-  if (e.ctrlKey || e.metaKey || e.shiftKey) {
-    // toggle selection
+  const isRangeSelection = e.shiftKey && state.lastSelectionAnchor && state.images.includes(state.lastSelectionAnchor);
+
+  if (e.ctrlKey || e.metaKey) {
     if (state.selectedSet.has(name)) {
       state.selectedSet.delete(name);
       el.classList.remove('selected');
@@ -943,25 +1052,49 @@ function handleItemClick(name, el, e) {
       state.selectedSet.add(name);
       el.classList.add('selected');
     }
+    state.lastSelectionAnchor = name;
     updateSelectionUI();
-  } else {
-    // plain click: set as preview target (does NOT clear multi-selection)
-    document.querySelectorAll('.img-item').forEach(i => i.classList.remove('active'));
-    el.classList.add('active');
-    state.selectedImage = name;
-    document.getElementById('preview-filename').textContent = name;
-    document.getElementById('btn-preview').disabled = false;
-    updateMapSelectionMarkers();
+    return;
   }
+
+  if (isRangeSelection) {
+    const start = state.images.indexOf(state.lastSelectionAnchor);
+    const end = state.images.indexOf(name);
+    if (start >= 0 && end >= 0) {
+      const [from, to] = [start, end].sort((a, b) => a - b);
+      for (let i = from; i <= to; i += 1) {
+        const itemName = state.images[i];
+        state.selectedSet.add(itemName);
+        const itemEl = document.querySelector(`.img-item[data-name="${CSS.escape(itemName)}"]`);
+        if (itemEl) itemEl.classList.add('selected');
+      }
+    }
+    state.lastSelectionAnchor = name;
+    updateSelectionUI();
+    return;
+  }
+
+  document.querySelectorAll('.img-item').forEach(i => i.classList.remove('active'));
+  el.classList.add('active');
+  state.selectedImage = name;
+  state.lastSelectionAnchor = name;
+  document.getElementById('preview-filename').textContent = name;
+  document.getElementById('btn-preview').disabled = false;
+  updatePreviewToolbar();
+  updateMapSelectionMarkers();
+  schedulePreviewUpdate();
 }
 
 function selectImage(name, el) {
   document.querySelectorAll('.img-item').forEach(i => i.classList.remove('active'));
   if (el) el.classList.add('active');
   state.selectedImage = name;
+  state.lastSelectionAnchor = name;
   document.getElementById('preview-filename').textContent = name;
   document.getElementById('btn-preview').disabled = false;
+  updatePreviewToolbar();
   updateMapSelectionMarkers();
+  schedulePreviewUpdate();
 }
 
 function updateImageList() {
@@ -969,11 +1102,32 @@ function updateImageList() {
   document.querySelectorAll('.img-item').forEach(div => {
     const name = div.dataset.name;
     const indicator = div.querySelector('.edit-indicator');
+    const badge = div.querySelector('.geo-status-pill');
+    const loc = imageLocations[name];
     
-    if (imageLocations[name]?.edited) {
+    if (loc?.edited) {
       if (indicator) indicator.style.display = 'inline';
     } else {
       if (indicator) indicator.style.display = 'none';
+    }
+
+    if (badge) {
+      if (loc?.status === 'edited' || loc?.status === 'manual') {
+        badge.textContent = 'Edited';
+        badge.className = 'geo-status-pill ok';
+      } else if (loc?.status === 'error') {
+        badge.textContent = 'Error';
+        badge.className = 'geo-status-pill err';
+      } else if (loc?.status === 'address-pending') {
+        badge.textContent = 'Pending';
+        badge.className = 'geo-status-pill warn';
+      } else if (loc?.has_gps && loc.lat != null && loc.lon != null) {
+        badge.textContent = 'GPS';
+        badge.className = 'geo-status-pill ok';
+      } else {
+        badge.textContent = 'Missing';
+        badge.className = 'geo-status-pill warn';
+      }
     }
     
     // Update active state
@@ -1006,15 +1160,19 @@ function updateMapSelectionMarkers() {
 }
 
 // Select all / clear
-document.getElementById('btn-select-all').addEventListener('click', () => {
-  state.selectedSet = new Set(state.images);
-  document.querySelectorAll('.img-item').forEach(el => el.classList.add('selected'));
-  updateSelectionUI();
-});
-document.getElementById('btn-clear-selection').addEventListener('click', () => {
-  state.selectedSet.clear();
-  document.querySelectorAll('.img-item').forEach(el => el.classList.remove('selected'));
-  updateSelectionUI();
+document.getElementById('btn-select-all').addEventListener('click', selectAllImages);
+document.getElementById('btn-clear-selection').addEventListener('click', clearSelection);
+
+document.addEventListener('keydown', e => {
+  const activeTag = document.activeElement?.tagName?.toLowerCase();
+  const isTyping = activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select';
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTyping) {
+    e.preventDefault();
+    selectAllImages();
+  }
+  if (e.key === 'Escape') {
+    clearSelection();
+  }
 });
 
 // ── Load folder ──
@@ -1034,8 +1192,8 @@ document.getElementById('btn-load-folder').addEventListener('click', async () =>
       return;
     }
     const d = await res.json();
-    populateImageList(d.images, d.source_folder);
-    setStatus(`Loaded ${d.images.length} image(s). Address lookup running in background…`, 'ok');
+    populateImageList(d.images, d.source_folder, d.summary);
+    setStatus(`Loaded ${formatSummary(d.summary)}. Address lookup running in background…`, 'ok');
     startGeocodePolling();
     
     // Refresh map if it exists
@@ -1069,8 +1227,8 @@ async function handleFiles(fileList) {
       return;
     }
     const d = await res.json();
-    populateImageList(d.images, d.source_folder);
-    setStatus(`Uploaded ${d.images.length} image(s).`, 'ok');
+    populateImageList(d.images, d.source_folder, d.summary);
+    setStatus(`Uploaded ${formatSummary(d.summary)}.`, 'ok');
     startGeocodePolling();
     
     // Refresh map if it exists
@@ -1096,15 +1254,42 @@ dropZone.addEventListener('drop', e => {
 });
 document.getElementById('file-picker').addEventListener('change', e => handleFiles(e.target.files));
 
+// ── Copy coordinates ──
+document.getElementById('btn-copy-coords').addEventListener('click', async () => {
+  if (!state.selectedImage) return;
+  const loc = imageLocations[state.selectedImage];
+  if (!loc || loc.lat == null || loc.lon == null) {
+    setStatus('No coordinates available for this image', 'info');
+    return;
+  }
+
+  const text = `${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}`;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    setStatus(`Copied coordinates for ${state.selectedImage}`, 'ok');
+  } catch (e) {
+    setStatus('Could not copy coordinates', 'err');
+  }
+});
+
 // ── Generate preview ──
-document.getElementById('btn-preview').addEventListener('click', async () => {
+async function previewSelectedImage({ quiet = false } = {}) {
   if (!state.selectedImage) return;
   const spinner = document.getElementById('preview-spinner');
   const img = document.getElementById('preview-img');
   const placeholder = document.getElementById('preview-placeholder');
 
   spinner.classList.add('active');
-  clearStatus();
+  if (!quiet) clearStatus();
 
   try {
     const res = await fetch('/api/preview', {
@@ -1118,7 +1303,7 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
     });
     if (!res.ok) {
       const err = await res.json();
-      setStatus(err.detail || 'Preview failed', 'err');
+      if (!quiet) setStatus(err.detail || 'Preview failed', 'err');
       return;
     }
     const d = await res.json();
@@ -1126,11 +1311,13 @@ document.getElementById('btn-preview').addEventListener('click', async () => {
     img.style.display = 'block';
     placeholder.style.display = 'none';
   } catch (e) {
-    setStatus('Preview error: ' + e.message, 'err');
+    if (!quiet) setStatus('Preview error: ' + e.message, 'err');
   } finally {
     spinner.classList.remove('active');
   }
-});
+}
+
+document.getElementById('btn-preview').addEventListener('click', () => previewSelectedImage());
 
 // ── Shared processing trigger ──
 async function triggerProcess(filenames) {
@@ -1232,6 +1419,10 @@ document.getElementById('s-output-quality').addEventListener('input', e => {
 (async () => {
   await loadDefaults();
   await loadFonts();
+  document.querySelectorAll('[id^="s-"]').forEach(el => {
+    el.addEventListener('input', schedulePreviewUpdate);
+    el.addEventListener('change', schedulePreviewUpdate);
+  });
   // Init map immediately (no tab click needed)
   setTimeout(() => { if (!map) initMap(); }, 0);
 })();
@@ -1456,6 +1647,7 @@ async function refreshMapLocations() {
     }
 
     updateMapSelectionMarkers();
+    updateGeoSummary();
     
     updateMapControls();
   } catch (e) {
@@ -1469,6 +1661,7 @@ function selectImageFromMap(filename) {
   updateMapSelectionMarkers();
   highlightSelectedMarker();
   updateMapControls();
+  updateGeoSummary();
 }
 
 function highlightSelectedMarker() {
@@ -1509,6 +1702,8 @@ async function onMarkerDrag(filename, latlng) {
       // Update image list to show edited indicator
       updateImageList();
       updateMapControls();
+      updatePreviewToolbar();
+      updateGeoSummary();
       
       setStatus(`Updated location for ${filename}`, 'ok');
     }
@@ -1532,6 +1727,8 @@ async function resetLocation(filename) {
     if (res.ok) {
       setStatus(`Reset location for ${filename}`, 'ok');
       await refreshMapLocations();
+      updatePreviewToolbar();
+      updateGeoSummary();
     }
   } catch (e) {
     console.error('Failed to reset location:', e);
