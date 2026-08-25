@@ -66,6 +66,10 @@ def create_overlay_text(metadata: dict) -> str:
         ch = metadata.get('chainage')
         lines.append(f"Chainage: {ch}" if ch else "Chainage: N/A")
 
+    # Mark images whose GPS location was manually edited
+    if metadata.get('location_edited'):
+        lines.append("* Location edited")
+
     # If only filename/project exists, add "No metadata available"
     metadata_exists = any([
         metadata.get('datetime'),
@@ -118,7 +122,7 @@ def load_font_with_fallback() -> ImageFont.FreeTypeFont:
             return ImageFont.load_default()
 
 
-def process_image(input_path: str, output_path: str, address: str = None, chainage: str = None) -> bool:
+def process_image(input_path: str, output_path: str, address: str = None, chainage: str = None, location_edited: bool = False) -> bool:
     """
     Process a single image by adding metadata overlay.
     
@@ -153,6 +157,8 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
         metadata['show_chainage'] = config.SHOW_CHAINAGE
         if chainage is not None:
             metadata['chainage'] = chainage
+
+        metadata['location_edited'] = location_edited
         
         # Convert direction to cardinal if available and enabled
         if config.SHOW_DIRECTION and metadata.get('direction') is not None:

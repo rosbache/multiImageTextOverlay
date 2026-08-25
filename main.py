@@ -278,12 +278,18 @@ def process_single_image(args_tuple: Tuple[Path, Path, str, dict, object, object
     Wrapper function for processing a single image (for multiprocessing).
     
     Args:
-        args_tuple: Tuple of (input_path, output_dir, collision_mode, config_dict, address, chainage)
+        args_tuple: Tuple of (input_path, output_dir, collision_mode, config_dict, address, chainage[, location_edited])
         
     Returns:
         Tuple of (success, input_filename, message)
     """
-    input_path, output_dir, collision_mode, config_dict, address, chainage = args_tuple
+    *base_args, last = args_tuple
+    if isinstance(last, bool):
+        input_path, output_dir, collision_mode, config_dict, address, chainage = base_args
+        location_edited = last
+    else:
+        input_path, output_dir, collision_mode, config_dict, address, chainage = (*base_args, last)
+        location_edited = False
     
     # Apply config overrides in worker process
     import config
@@ -302,7 +308,7 @@ def process_single_image(args_tuple: Tuple[Path, Path, str, dict, object, object
             logging.debug(f"Renamed output to: {output_path.name}")
     
     # Process the image
-    success = process_image(str(input_path), str(output_path), address=address, chainage=chainage)
+    success = process_image(str(input_path), str(output_path), address=address, chainage=chainage, location_edited=location_edited)
     
     if success:
         return True, input_path.name, "processed successfully"

@@ -293,7 +293,7 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[s
 
     out_path = Path(tempfile.gettempdir()) / f"preview_{uuid.uuid4().hex}.jpg"
     try:
-        success = process_image(working_path, str(out_path), address=address, chainage=chainage)
+        success = process_image(working_path, str(out_path), address=address, chainage=chainage, location_edited=needs_temp_copy)
         if not success:
             raise RuntimeError("process_image returned False")
 
@@ -315,7 +315,7 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[s
 
 def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
                    cfg_dict: dict, collision_mode: str, max_workers: int,
-                   address_map: dict, chainage_map: dict):
+                   address_map: dict, chainage_map: dict, edited_map: dict = None):
     """
     Execute batch processing in a background thread.
     Calls process_single_image workers via ProcessPoolExecutor.
@@ -325,8 +325,9 @@ def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
     jobs[job_id]["status"] = "running"
     jobs[job_id]["total"] = len(jpg_files)
 
+    _edited_map = edited_map or {}
     process_args = [
-        (jpg, output_dir, collision_mode, cfg_dict, address_map.get(jpg.name), chainage_map.get(jpg.name))
+        (jpg, output_dir, collision_mode, cfg_dict, address_map.get(jpg.name), chainage_map.get(jpg.name), _edited_map.get(jpg.name, False))
         for jpg in jpg_files
     ]
 
@@ -658,7 +659,10 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
         raise HTTPException(status_code=400, detail=f"Cannot create output dir: {e}")
 
     cfg_dict = _settings_to_config_dict(req.settings)
-    
+
+    # Snapshot which files had location edits before overrides are cleared
+    edited_map: dict[str, bool] = {f.name: f.name in location_overrides for f in jpg_files}
+
     # Write staged location overrides to source EXIF before processing
     if location_overrides:
         from exif_handler import write_gps_to_exif, reverse_geocode
@@ -764,7 +768,7 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
         _run_batch_job,
         job_id, jpg_files, output_dir,
         cfg_dict, req.settings.file_collision_mode,
-        req.settings.max_workers, address_map, chainage_map,
+        req.settings.max_workers, address_map, chainage_map, edited_map,
     )
 
     return {"job_id": job_id, "total": len(jpg_files)}
