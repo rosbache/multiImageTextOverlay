@@ -17,8 +17,9 @@ def create_overlay_text(metadata: dict) -> str:
     Create formatted text string from metadata.
     
     Args:
-        metadata: Dictionary with 'filename', 'datetime', 'location', 'altitude', 'direction', 
-                  'direction_cardinal', 'project_info', and optionally 'location_utm' keys
+        metadata: Dictionary with 'filename', 'datetime', 'location', 'altitude', 'direction',
+                  'gps_accuracy', 'direction_cardinal', 'project_info', and optionally
+                  'location_utm' keys
         
     Returns:
         Formatted text string for overlay
@@ -50,6 +51,10 @@ def create_overlay_text(metadata: dict) -> str:
     if metadata.get('altitude') is not None:
         lines.append(f"Height: {metadata['altitude']:.1f} m")
 
+    # Add GPS accuracy if available
+    if metadata.get('gps_accuracy') is not None:
+        lines.append(f"GPS Accuracy: {metadata['gps_accuracy']:.1f} m")
+
     # Add address if available
     if config.SHOW_ADDRESS and metadata.get('address'):
         lines.append(f"Address: {metadata['address']}")
@@ -71,6 +76,7 @@ def create_overlay_text(metadata: dict) -> str:
         metadata.get('datetime'),
         metadata.get('location'),
         metadata.get('altitude') is not None,
+        metadata.get('gps_accuracy') is not None,
         metadata.get('direction') is not None
     ])
     if not metadata_exists and (metadata.get('filename') or metadata.get('project_info')):
@@ -245,4 +251,3 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
         # Catch any unexpected exceptions
         logging.error(f"Unexpected error processing {input_path}: {e}", exc_info=True)
         return False
-

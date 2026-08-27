@@ -1,7 +1,7 @@
 """
 EXIF Metadata Extraction Module
 
-Extracts DateTime and GPS location data from JPG image EXIF metadata.
+Extracts capture time and GPS metadata from JPG image EXIF metadata.
 """
 
 import time
@@ -186,6 +186,42 @@ def decimal_to_dms(decimal: float, is_latitude: bool) -> str:
     return f"{degrees}°{minutes}'{seconds}\"{direction}"
 
 
+def _decode_exif_text(value) -> str:
+    """
+    Decode EXIF text values with UTF-8 fallback to latin-1.
+
+    Args:
+        value: EXIF value as bytes or string
+
+    Returns:
+        Decoded string value
+    """
+    if isinstance(value, str):
+        return value
+    try:
+        return value.decode('utf-8')
+    except UnicodeDecodeError:
+        return value.decode('latin-1', errors='replace')
+
+
+def _parse_rational_value(value) -> float:
+    """
+    Convert a rational EXIF value to float.
+
+    Args:
+        value: EXIF rational tuple or numeric value
+
+    Returns:
+        Parsed float value
+    """
+    if isinstance(value, tuple) and len(value) == 2:
+        numerator, denominator = value
+        if denominator == 0:
+            raise ZeroDivisionError("EXIF rational denominator cannot be zero")
+        return numerator / denominator
+    return float(value)
+
+
 def degrees_to_cardinal(degrees: float, precision: int = 8) -> str:
     """
     Convert degrees (0-360) to cardinal/intercardinal direction.
@@ -287,10 +323,11 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
     Returns:
         Dictionary containing:
         - 'filename': Filename (or None)
-        - 'datetime': Date and time string (or None)
+        - 'datetime': Capture date and time string, preferring DateTimeOriginal (or None)
         - 'location': Human-readable GPS coordinates (or None)
         - 'altitude': Altitude in meters (or None)
         - 'direction': Image direction in degrees (or None)
+        - 'gps_accuracy': GPS positioning accuracy in meters (or None)
     """
     result = {
         'filename': filename,
@@ -298,6 +335,7 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
         'location': None,
         'altitude': None,
         'direction': None,
+        'gps_accuracy': None,
         '_lat_decimal': None,
         '_lon_decimal': None,
     }
@@ -305,16 +343,16 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
     try:
         exif_dict = piexif.load(image_path)
         
-        # Extract DateTime
-        if '0th' in exif_dict and piexif.ImageIFD.DateTime in exif_dict['0th']:
+        # Extract capture time, preferring DateTimeOriginal over the generic DateTime
+        datetime_value = None
+        if 'Exif' in exif_dict and piexif.ExifIFD.DateTimeOriginal in exif_dict['Exif']:
+            datetime_value = exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal]
+        elif '0th' in exif_dict and piexif.ImageIFD.DateTime in exif_dict['0th']:
+            datetime_value = exif_dict['0th'][piexif.ImageIFD.DateTime]
+
+        if datetime_value is not None:
             try:
-                datetime_bytes = exif_dict['0th'][piexif.ImageIFD.DateTime]
-                # Try UTF-8 first, with fallback to latin-1
-                try:
-                    result['datetime'] = datetime_bytes.decode('utf-8')
-                except UnicodeDecodeError:
-                    result['datetime'] = datetime_bytes.decode('latin-1', errors='replace')
-                    logging.debug(f"Used latin-1 encoding for datetime in {image_path}")
+                result['datetime'] = _decode_exif_text(datetime_value)
             except (AttributeError, UnicodeDecodeError) as e:
                 logging.warning(f"Could not decode datetime from {image_path}: {e}")
         
@@ -369,11 +407,7 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
                             altitude_rational = gps_data[piexif.GPSIFD.GPSAltitude]
                             altitude_ref = gps_data.get(piexif.GPSIFD.GPSAltitudeRef, 0)
                             
-                            # Convert rational to float
-                            if isinstance(altitude_rational, tuple) and len(altitude_rational) == 2:
-                                altitude = altitude_rational[0] / altitude_rational[1]
-                            else:
-                                altitude = float(altitude_rational)
+                            altitude = _parse_rational_value(altitude_rational)
                             
                             # Apply altitude reference (0 = above sea level, 1 = below sea level)
                             if altitude_ref == 1:
@@ -389,11 +423,7 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
                             direction_rational = gps_data[piexif.GPSIFD.GPSImgDirection]
                             direction_ref = gps_data.get(piexif.GPSIFD.GPSImgDirectionRef, b'T')
                             
-                            # Convert rational to float
-                            if isinstance(direction_rational, tuple) and len(direction_rational) == 2:
-                                direction = direction_rational[0] / direction_rational[1]
-                            else:
-                                direction = float(direction_rational)
+                            direction = _parse_rational_value(direction_rational)
                             
                             # Direction ref can be 'T' (True North) or 'M' (Magnetic North)
                             # We'll use the value as-is since most devices use True North
@@ -401,6 +431,15 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
                             logging.debug(f"Extracted direction: {direction}° from {image_path}")
                         except (ValueError, ZeroDivisionError, TypeError) as e:
                             logging.debug(f"Could not parse direction from {image_path}: {e}")
+
+                    # Extract GPS horizontal positioning accuracy if available
+                    if piexif.GPSIFD.GPSHPositioningError in gps_data:
+                        try:
+                            result['gps_accuracy'] = _parse_rational_value(
+                                gps_data[piexif.GPSIFD.GPSHPositioningError]
+                            )
+                        except (ValueError, ZeroDivisionError, TypeError) as e:
+                            logging.debug(f"Could not parse GPS accuracy from {image_path}: {e}")
                     
                     # Transform to UTM if enabled
                     if config.SHOW_UTM_COORDINATES:
@@ -506,4 +545,3 @@ def write_gps_to_exif(image_path: str, lat: float, lon: float, altitude: Optiona
     except Exception as e:
         logging.error(f"Unexpected error writing GPS to {image_path}: {e}")
         return False
-

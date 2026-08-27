@@ -5,12 +5,13 @@ A Python tool for processing JPG images with EXIF-driven text overlays. It suppo
 ## Features
 
 - Extracts EXIF metadata from JPG images
-- Displays date and time from image metadata
+- Displays original capture date and time from image metadata (`DateTimeOriginal` when available)
 - Shows GPS location in human-readable format (for example, `40°42'46"N, 74°0'21"W`)
 - Corrects wrong GPS locations before processing, either on the map or through a JSON override file
 - Converts GPS coordinates to UTM or other projected coordinate systems
 - Displays image direction in degrees with cardinal directions
 - Optionally looks up the nearest street address from GPS coordinates
+- Displays GPS accuracy when present in EXIF metadata
 - Calculates chainage from a SOSI `KURVE` reference line, with optional left/right offset text
 - Adds optional project information at the top of every image
 - Supports customizable text appearance, padding, and outline styling
@@ -30,6 +31,7 @@ image001
 Date: 2024-08-15 14:30:22
 Location: 40°42'46"N, 74°0'21"W
 UTM 32N: 123456.78E, 987654.32N
+GPS Accuracy: 3.5 m
 Address: Exampleveien 12, 3530 Røyse
 Height: 125.3 m
 Direction: 45° (NE)
@@ -344,6 +346,10 @@ The tool can process images in parallel using a configurable worker count. You c
 
 ### EXIF Preservation
 Original EXIF metadata is preserved in processed images, including camera settings, GPS data, and timestamps.
+
+### Capture Time and GPS Accuracy
+- **Capture timestamp**: Uses `DateTimeOriginal` when present, with fallback to generic `DateTime`
+- **GPS accuracy**: Displays `GPSHPositioningError` in metres when the camera/device recorded it
 
 ### File Collision Handling
 - **overwrite** (default): Replaces existing files
