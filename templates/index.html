@@ -145,28 +145,56 @@
     .preview-toolbar span { font-size: .8rem; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .preview-container {
       flex: 1;
+      position: relative;
+      overflow: hidden;
+      min-height: 0;
+    }
+    #zoom-viewport {
+      width: 100%;
+      height: 100%;
       display: flex;
       align-items: center;
       justify-content: center;
       overflow: hidden;
-      position: relative;
+      cursor: grab;
     }
+    #zoom-viewport.is-dragging { cursor: grabbing; }
     #preview-img {
       max-width: 100%;
       max-height: 100%;
       object-fit: contain;
       border-radius: var(--radius);
       display: none;
+      transform-origin: center center;
+      user-select: none;
+      -webkit-user-drag: none;
     }
     .preview-placeholder {
+      position: absolute;
+      inset: 0;
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: center;
       gap: 10px;
       color: var(--muted);
       font-size: .9rem;
+      z-index: 5;
+      background: #0a0f1e;
     }
     .preview-placeholder svg { opacity: .3; }
+    .zoom-controls { display: none; align-items: center; gap: 3px; margin-left: auto; }
+    .zoom-controls.visible { display: flex; }
+    .zoom-controls .btn { padding: 3px 8px; font-size: .8rem; min-width: 26px; }
+    #zoom-level { font-size: .72rem; color: var(--muted); min-width: 38px; text-align: center; }
+    .preview-resize-handle {
+      height: 5px;
+      background: var(--border);
+      cursor: row-resize;
+      flex-shrink: 0;
+      transition: background .15s;
+    }
+    .preview-resize-handle:hover, .preview-resize-handle.resizing { background: var(--accent2); }
     #preview-spinner {
       display: none;
       position: absolute;
@@ -375,11 +403,10 @@
     }
     
     #preview-container-wrapper {
-      height: 50%;
-      min-height: 120px;
+      height: 60%;
+      min-height: 140px;
       display: flex;
       flex-direction: column;
-      border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
     
@@ -432,6 +459,8 @@
     .selected-marker.is-preview {
       filter: hue-rotate(340deg) brightness(1.25) saturate(1.35);
     }
+    #map-container.draw-rect-mode #map { cursor: crosshair !important; }
+    .btn.draw-rect-active { background: #4dabf7 !important; color: #000 !important; }
 
     /* ── Chainage / line styles ── */
     .chainage-tooltip {
@@ -671,6 +700,12 @@
         <button class="btn btn-accent" id="btn-preview" disabled>Generate Preview</button>
         <button class="btn" id="btn-copy-coords" disabled title="Copy selected image coordinates">Copy Coords</button>
         <span id="preview-filename">No image selected</span>
+        <div class="zoom-controls" id="zoom-controls">
+          <button class="btn" id="btn-zoom-out" title="Zoom out (scroll down)">−</button>
+          <span id="zoom-level">100%</span>
+          <button class="btn" id="btn-zoom-in" title="Zoom in (scroll up)">+</button>
+          <button class="btn" id="btn-zoom-reset" title="Reset zoom">⟲</button>
+        </div>
       </div>
       <div id="preview-location-status" class="geo-status-summary" style="padding: 6px 14px 8px; display:none"></div>
       <div class="preview-container">
@@ -682,16 +717,19 @@
           </svg>
           <span>Select an image and click Generate Preview</span>
         </div>
-        <img id="preview-img" alt="Preview" />
+        <div id="zoom-viewport">
+          <img id="preview-img" alt="Preview" />
+        </div>
         <div id="preview-spinner"><div class="spinner"></div></div>
       </div>
     </div>
-    
+    <div class="preview-resize-handle" id="preview-resize-handle"></div>
     <!-- Map (below, larger) -->
     <div id="map-container">
       <div id="map"></div>
       <div id="map-chainage-summary">Last chainage: -</div>
       <div class="map-controls">
+        <button class="btn" id="btn-draw-rect" title="Draw rectangle to select images (Ctrl/Shift still works on markers)">Select Area</button>
         <button class="btn" id="btn-reset-location" disabled title="Reset selected image location">Reset Location</button>
         <button class="btn" id="btn-reset-all-locations" disabled title="Reset all location edits">Reset All</button>
       </div>
@@ -1085,6 +1123,44 @@ function handleItemClick(name, el, e) {
   schedulePreviewUpdate();
 }
 
+function handleMarkerClick(filename, nativeEvent) {
+  const listEl = document.querySelector(`.img-item[data-name="${CSS.escape(filename)}"]`);
+
+  if (nativeEvent && (nativeEvent.ctrlKey || nativeEvent.metaKey)) {
+    if (state.selectedSet.has(filename)) {
+      state.selectedSet.delete(filename);
+      listEl?.classList.remove('selected');
+    } else {
+      state.selectedSet.add(filename);
+      listEl?.classList.add('selected');
+    }
+    state.lastSelectionAnchor = filename;
+    updateSelectionUI();
+    updateMapSelectionMarkers();
+    return;
+  }
+
+  if (nativeEvent && nativeEvent.shiftKey && state.lastSelectionAnchor && state.images.includes(state.lastSelectionAnchor)) {
+    const start = state.images.indexOf(state.lastSelectionAnchor);
+    const end = state.images.indexOf(filename);
+    if (start >= 0 && end >= 0) {
+      const [from, to] = [start, end].sort((a, b) => a - b);
+      for (let i = from; i <= to; i += 1) {
+        const itemName = state.images[i];
+        state.selectedSet.add(itemName);
+        const itemEl = document.querySelector(`.img-item[data-name="${CSS.escape(itemName)}"]`);
+        if (itemEl) itemEl.classList.add('selected');
+      }
+    }
+    state.lastSelectionAnchor = filename;
+    updateSelectionUI();
+    updateMapSelectionMarkers();
+    return;
+  }
+
+  selectImageFromMap(filename);
+}
+
 function selectImage(name, el) {
   document.querySelectorAll('.img-item').forEach(i => i.classList.remove('active'));
   if (el) el.classList.add('active');
@@ -1310,6 +1386,8 @@ async function previewSelectedImage({ quiet = false } = {}) {
     img.src = 'data:image/jpeg;base64,' + d.image;
     img.style.display = 'block';
     placeholder.style.display = 'none';
+    resetPreviewZoom();
+    document.getElementById('zoom-controls').classList.add('visible');
   } catch (e) {
     if (!quiet) setStatus('Preview error: ' + e.message, 'err');
   } finally {
@@ -1628,7 +1706,7 @@ async function refreshMapLocations() {
         
         marker.bindPopup(_buildMarkerPopup(loc));
         
-        marker.on('click', () => selectImageFromMap(loc.filename));
+        marker.on('click', (e) => handleMarkerClick(loc.filename, e.originalEvent));
         marker.on('dragend', (e) => onMarkerDrag(loc.filename, e.target.getLatLng()));
         
         if (loc.edited) {
@@ -1768,6 +1846,153 @@ document.getElementById('btn-reset-location').addEventListener('click', () => {
 });
 
 document.getElementById('btn-reset-all-locations').addEventListener('click', resetAllLocations);
+document.getElementById('btn-draw-rect').addEventListener('click', toggleDrawRectMode);
+
+// ── Rectangle area selection ──
+let _drawRectMode = false;
+let _drawRectStart = null;
+let _drawRectLayer = null;
+
+function toggleDrawRectMode() {
+  _drawRectMode ? _endDrawRect() : _startDrawRect();
+}
+
+function _startDrawRect() {
+  _drawRectMode = true;
+  document.getElementById('btn-draw-rect').classList.add('draw-rect-active');
+  document.getElementById('map-container').classList.add('draw-rect-mode');
+  map.on('mousedown', _onRectMousedown);
+}
+
+function _endDrawRect() {
+  _drawRectMode = false;
+  document.getElementById('btn-draw-rect').classList.remove('draw-rect-active');
+  document.getElementById('map-container').classList.remove('draw-rect-mode');
+  map.off('mousedown', _onRectMousedown);
+  map.off('mousemove', _onRectMousemove);
+  map.off('mouseup', _onRectMouseup);
+  map.dragging.enable();
+  if (_drawRectLayer) { map.removeLayer(_drawRectLayer); _drawRectLayer = null; }
+  _drawRectStart = null;
+}
+
+function _onRectMousedown(e) {
+  _drawRectStart = e.latlng;
+  map.dragging.disable();
+  if (_drawRectLayer) map.removeLayer(_drawRectLayer);
+  _drawRectLayer = L.rectangle([e.latlng, e.latlng], {
+    color: '#4dabf7', weight: 2, dashArray: '5,5', fillOpacity: 0.08, interactive: false,
+  }).addTo(map);
+  map.on('mousemove', _onRectMousemove);
+  map.on('mouseup', _onRectMouseup);
+}
+
+function _onRectMousemove(e) {
+  if (_drawRectStart && _drawRectLayer) _drawRectLayer.setBounds([_drawRectStart, e.latlng]);
+}
+
+function _onRectMouseup(e) {
+  if (_drawRectStart) _selectMarkersInBounds(L.latLngBounds(_drawRectStart, e.latlng));
+  _endDrawRect();
+}
+
+function _selectMarkersInBounds(bounds) {
+  let added = 0;
+  Object.entries(markers).forEach(([filename, marker]) => {
+    if (bounds.contains(marker.getLatLng())) {
+      state.selectedSet.add(filename);
+      const el = document.querySelector(`.img-item[data-name="${CSS.escape(filename)}"]`);
+      if (el) el.classList.add('selected');
+      added++;
+    }
+  });
+  if (added > 0) {
+    updateSelectionUI();
+    updateMapSelectionMarkers();
+  }
+}
+
+// ── Preview zoom & pan ──
+const _pz = { scale: 1, tx: 0, ty: 0, dragging: false, lastX: 0, lastY: 0 };
+
+function applyPreviewTransform() {
+  const img = document.getElementById('preview-img');
+  img.style.transform = `translate(${_pz.tx}px, ${_pz.ty}px) scale(${_pz.scale})`;
+  document.getElementById('zoom-level').textContent = Math.round(_pz.scale * 100) + '%';
+}
+
+function resetPreviewZoom() {
+  _pz.scale = 1; _pz.tx = 0; _pz.ty = 0;
+  applyPreviewTransform();
+}
+
+(function initPreviewZoom() {
+  const viewport = document.getElementById('zoom-viewport');
+
+  // Scroll to zoom, keeping cursor position fixed
+  viewport.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const newScale = Math.min(Math.max(_pz.scale * factor, 0.1), 10);
+    const rect = viewport.getBoundingClientRect();
+    const cx = e.clientX - rect.left - rect.width / 2;
+    const cy = e.clientY - rect.top - rect.height / 2;
+    const ratio = newScale / _pz.scale;
+    _pz.tx = cx - (cx - _pz.tx) * ratio;
+    _pz.ty = cy - (cy - _pz.ty) * ratio;
+    _pz.scale = newScale;
+    applyPreviewTransform();
+  }, { passive: false });
+
+  // Drag to pan
+  viewport.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    _pz.dragging = true; _pz.lastX = e.clientX; _pz.lastY = e.clientY;
+    viewport.classList.add('is-dragging');
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!_pz.dragging) return;
+    _pz.tx += e.clientX - _pz.lastX;
+    _pz.ty += e.clientY - _pz.lastY;
+    _pz.lastX = e.clientX; _pz.lastY = e.clientY;
+    applyPreviewTransform();
+  });
+  document.addEventListener('mouseup', () => {
+    if (_pz.dragging) { _pz.dragging = false; viewport.classList.remove('is-dragging'); }
+  });
+
+  document.getElementById('btn-zoom-in').addEventListener('click', () => {
+    _pz.scale = Math.min(_pz.scale * 1.3, 10); applyPreviewTransform();
+  });
+  document.getElementById('btn-zoom-out').addEventListener('click', () => {
+    _pz.scale = Math.max(_pz.scale / 1.3, 0.1); applyPreviewTransform();
+  });
+  document.getElementById('btn-zoom-reset').addEventListener('click', resetPreviewZoom);
+})();
+
+// ── Preview / map resize handle ──
+(function initPreviewResize() {
+  const handle = document.getElementById('preview-resize-handle');
+  const wrapper = document.getElementById('preview-container-wrapper');
+  const panel = document.querySelector('.preview-panel');
+  let _resizing = false;
+
+  handle.addEventListener('mousedown', (e) => {
+    _resizing = true;
+    handle.classList.add('resizing');
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!_resizing) return;
+    const panelRect = panel.getBoundingClientRect();
+    const newH = Math.min(Math.max(e.clientY - panelRect.top, 140), panelRect.height - 150);
+    wrapper.style.height = newH + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (_resizing) { _resizing = false; handle.classList.remove('resizing'); }
+  });
+})();
 
 // ── SOSI Line / Chainage ──
 
