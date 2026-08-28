@@ -634,6 +634,69 @@ async def generate_preview(req: PreviewRequest):
     return {"image": b64}
 
 
+@app.get("/api/exif")
+async def get_exif_data(filename: str, source_folder: str):
+    """Return all EXIF tags and image dimensions for the given image."""
+    import piexif
+    from PIL import Image as PilImage
+
+    input_path = Path(source_folder) / filename
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail=f"Image not found: {filename}")
+
+    result: dict[str, Any] = {}
+
+    # Image dimensions and file size
+    try:
+        with PilImage.open(str(input_path)) as im:
+            result["width"], result["height"] = im.size
+    except Exception as e:
+        logger.warning(f"Could not open image for dimensions: {e}")
+
+    result["file_size_bytes"] = input_path.stat().st_size
+
+    # Raw EXIF tags
+    tag_sections: dict[str, dict[str, str]] = {}
+    try:
+        exif_dict = piexif.load(str(input_path))
+        ifd_names = {
+            "0th": piexif.ImageIFD,
+            "Exif": piexif.ExifIFD,
+            "GPS": piexif.GPSIFD,
+            "1st": piexif.ImageIFD,
+        }
+        for ifd_key, ifd_tags in ifd_names.items():
+            section = exif_dict.get(ifd_key, {})
+            if not section:
+                continue
+            tag_map = {v: k for k, v in vars(ifd_tags).items() if isinstance(v, int)}
+            entries: dict[str, str] = {}
+            for tag_id, value in section.items():
+                tag_name = tag_map.get(tag_id, f"Tag_{tag_id}")
+                if isinstance(value, bytes):
+                    try:
+                        decoded = value.decode("utf-8").rstrip("\x00")
+                    except UnicodeDecodeError:
+                        decoded = value.decode("latin-1", errors="replace").rstrip("\x00")
+                    entries[tag_name] = decoded
+                elif isinstance(value, tuple) and all(isinstance(v, tuple) for v in value):
+                    # Rational array (GPS coords etc.)
+                    parts = [f"{n}/{d}" for n, d in value]
+                    entries[tag_name] = ", ".join(parts)
+                elif isinstance(value, tuple) and len(value) == 2:
+                    n, d = value
+                    entries[tag_name] = f"{n/d:.6g}" if d != 0 else str(n)
+                else:
+                    entries[tag_name] = str(value)
+            if entries:
+                tag_sections[ifd_key] = entries
+    except Exception as e:
+        logger.warning(f"Could not read EXIF tags for {filename}: {e}")
+
+    result["exif"] = tag_sections
+    return result
+
+
 @app.post("/api/process")
 async def start_processing(req: ProcessRequest, background_tasks: BackgroundTasks):
     """Start batch image processing. Returns job_id for SSE progress tracking."""

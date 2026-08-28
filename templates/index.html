@@ -479,6 +479,61 @@
     .sosi-load-row input { flex: 1; }
     .sosi-load-row .btn { flex-shrink: 0; }
     .sosi-or-divider { text-align: center; color: var(--muted); font-size: .72rem; padding: 2px 0; }
+
+    /* ── EXIF info panel ── */
+    #exif-panel {
+      display: none;
+      flex-shrink: 0;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    #exif-panel::-webkit-scrollbar { width: 5px; }
+    #exif-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    #exif-panel.visible { display: block; }
+    #exif-panel summary {
+      cursor: pointer;
+      font-size: .72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--muted);
+      padding: 6px 14px;
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      z-index: 1;
+    }
+    #exif-panel summary::after { content: '▾'; transition: transform .2s; }
+    #exif-panel details[open] summary::after { transform: rotate(-180deg); }
+    #exif-panel details { border: none; margin: 0; }
+    #exif-meta-header {
+      font-size: .72rem;
+      color: var(--muted);
+      padding: 4px 14px 2px;
+      display: flex;
+      gap: 16px;
+    }
+    #exif-meta-header span { color: var(--text); }
+    .exif-section { padding: 0 14px 8px; }
+    .exif-section-title {
+      font-size: .65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--accent2);
+      margin: 6px 0 3px;
+    }
+    .exif-table { width: 100%; border-collapse: collapse; font-size: .72rem; }
+    .exif-table tr:nth-child(even) td { background: rgba(255,255,255,.03); }
+    .exif-table td { padding: 2px 6px; vertical-align: top; }
+    .exif-table td:first-child { color: var(--muted); white-space: nowrap; padding-right: 12px; width: 40%; }
+    .exif-table td:last-child { word-break: break-all; }
   </style>
 </head>
 <body>
@@ -724,6 +779,14 @@
       </div>
     </div>
     <div class="preview-resize-handle" id="preview-resize-handle"></div>
+    <!-- EXIF info panel -->
+    <div id="exif-panel">
+      <details open>
+        <summary>EXIF &amp; Image Info</summary>
+        <div id="exif-meta-header"></div>
+        <div id="exif-sections" class="exif-section"></div>
+      </details>
+    </div>
     <!-- Map (below, larger) -->
     <div id="map-container">
       <div id="map"></div>
@@ -1121,6 +1184,7 @@ function handleItemClick(name, el, e) {
   updatePreviewToolbar();
   updateMapSelectionMarkers();
   schedulePreviewUpdate();
+  loadExifData(name, state.sourceFolder);
 }
 
 function handleMarkerClick(filename, nativeEvent) {
@@ -1171,6 +1235,7 @@ function selectImage(name, el) {
   updatePreviewToolbar();
   updateMapSelectionMarkers();
   schedulePreviewUpdate();
+  loadExifData(name, state.sourceFolder);
 }
 
 function updateImageList() {
@@ -1396,6 +1461,56 @@ async function previewSelectedImage({ quiet = false } = {}) {
 }
 
 document.getElementById('btn-preview').addEventListener('click', () => previewSelectedImage());
+
+// ── EXIF info panel ──
+async function loadExifData(filename, sourceFolder) {
+  const panel = document.getElementById('exif-panel');
+  const metaHeader = document.getElementById('exif-meta-header');
+  const sectionsEl = document.getElementById('exif-sections');
+
+  if (!filename || !sourceFolder) { panel.classList.remove('visible'); return; }
+
+  panel.classList.add('visible');
+  metaHeader.textContent = 'Loading…';
+  sectionsEl.innerHTML = '';
+
+  try {
+    const params = new URLSearchParams({ filename, source_folder: sourceFolder });
+    const res = await fetch(`/api/exif?${params}`);
+    if (!res.ok) { metaHeader.textContent = 'Could not load EXIF data.'; return; }
+    const d = await res.json();
+
+    // Header: dimensions + file size
+    const sizeKb = d.file_size_bytes ? (d.file_size_bytes / 1024).toFixed(0) + ' KB' : '—';
+    const dims = (d.width && d.height) ? `${d.width} × ${d.height} px` : '—';
+    metaHeader.innerHTML =
+      `Dimensions: <span>${dims}</span> &nbsp; File size: <span>${sizeKb}</span>`;
+
+    // EXIF sections
+    const exif = d.exif || {};
+    sectionsEl.innerHTML = '';
+    for (const [section, tags] of Object.entries(exif)) {
+      const title = document.createElement('div');
+      title.className = 'exif-section-title';
+      title.textContent = section;
+      sectionsEl.appendChild(title);
+
+      const table = document.createElement('table');
+      table.className = 'exif-table';
+      for (const [key, val] of Object.entries(tags)) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${key}</td><td>${val}</td>`;
+        table.appendChild(tr);
+      }
+      sectionsEl.appendChild(table);
+    }
+    if (!Object.keys(exif).length) {
+      sectionsEl.innerHTML = '<em style="color:var(--muted);font-size:.72rem">No EXIF data found.</em>';
+    }
+  } catch (e) {
+    metaHeader.textContent = 'Error loading EXIF data.';
+  }
+}
 
 // ── Shared processing trigger ──
 async function triggerProcess(filenames) {
