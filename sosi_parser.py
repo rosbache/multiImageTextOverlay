@@ -1,7 +1,8 @@
 """General-purpose SOSI file parser.
 
 Parses the full .HODE header and all geometry object types
-(PUNKT, KURVE, BUEP, FLATE, TEKST) into structured dataclasses.
+(PUNKT, KURVE, LINJE, BUEP, FLATE, TEKST) into structured dataclasses.
+LINJE is the SOSI 3.4 name for the line/curve geometry SOSI 4.x calls KURVE.
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ class SosiHeader:
 class SosiObject:
     """Structured representation of one SOSI geometry object."""
 
-    object_type: str  # PUNKT, KURVE, BUEP, FLATE, TEKST, …
+    object_type: str  # PUNKT, KURVE, LINJE, BUEP, FLATE, TEKST, …
     object_id: int
 
     objtype: Optional[str] = None  # value of ..OBJTYPE
@@ -713,6 +714,11 @@ def _parse_key_value(content: str) -> Tuple[str, str]:
 
 def _normalize_sosi_key(key: str) -> str:
     key = key.upper()
+    # Some producers mis-encode Ø/Æ/Å as the Unicode replacement character
+    # (U+FFFD). In SOSI headers/coord-column keys this is almost always a
+    # lost "Ø" (NØH, ORIGO-NØ, MIN-NØ, MAX-NØ), so map it the same way
+    # rather than silently dropping it (which broke ORIGO-NØ parsing).
+    key = key.replace("\ufffd", "O")
     key = key.replace("Ø", "O").replace("Æ", "AE").replace("Å", "A")
     key = key.replace("-", "_")
     return re.sub(r"[^A-Z0-9_]", "", key)
