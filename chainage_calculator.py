@@ -100,6 +100,9 @@ def _transformer_from_wgs84(epsg: int):
 def list_sosi_kurves(sosi_file: str) -> List[dict]:
     """Parse *sosi_file* and return metadata for every KURVE-type object.
 
+    Also matches LINJE, the SOSI 3.4 name for the same line/curve geometry
+    (SOSI 4.x renamed it to KURVE).
+
     Returns a list of dicts::
 
         {id, object_type, objtype, coord_count, length_m}
@@ -113,7 +116,7 @@ def list_sosi_kurves(sosi_file: str) -> List[dict]:
 
     kurves = []
     for obj_id, obj in result.objects.items():
-        if obj.object_type not in ("KURVE", "BUEP"):
+        if obj.object_type not in ("KURVE", "BUEP", "LINJE"):
             continue
         coords = obj.scaled_coordinates(enhet, origo_n, origo_e)
         length_m = 0.0
