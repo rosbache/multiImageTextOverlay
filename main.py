@@ -273,32 +273,54 @@ def get_unique_output_path(output_path: Path) -> Path:
         counter += 1
 
 
-def process_single_image(args_tuple: Tuple[Path, Path, str, dict, object, object]) -> Tuple[bool, str, str]:
+def process_single_image(args_tuple) -> Tuple[bool, str, str]:
     """
     Wrapper function for processing a single image (for multiprocessing).
     
     Args:
-        args_tuple: Tuple of (input_path, output_dir, collision_mode, config_dict, address, chainage[, location_edited])
+        args_tuple: Tuple of
+            (input_path, output_dir, collision_mode, config_dict, address, chainage)
+            or with optional trailing entries:
+                (..., location_edited: bool)
+                (..., location_edited: bool, polygon_value: Optional[str])
         
     Returns:
         Tuple of (success, input_filename, message)
     """
-    *base_args, last = args_tuple
-    if isinstance(last, bool):
-        input_path, output_dir, collision_mode, config_dict, address, chainage = base_args
-        location_edited = last
-    else:
-        input_path, output_dir, collision_mode, config_dict, address, chainage = (*base_args, last)
-        location_edited = False
-    
+    tuple_args = list(args_tuple)
+    if len(tuple_args) < 6:
+        raise ValueError(f"process_single_image expects at least 6 args, got {len(tuple_args)}")
+
+    input_path, output_dir, collision_mode, config_dict, address, chainage = tuple_args[:6]
+
+    # Optional trailing args
+    location_edited = False
+    polygon_value = None
+    if len(tuple_args) >= 7:
+        seventh = tuple_args[6]
+        if isinstance(seventh, bool):
+            location_edited = seventh
+        else:
+            polygon_value = seventh
+    if len(tuple_args) >= 8:
+        polygon_value = tuple_args[7]
+
     # Apply config overrides in worker process
     import config
     for key, value in config_dict.items():
         setattr(config, key, value)
-    
-    # Create output path with same filename
-    output_path = output_dir / input_path.name
-    
+
+    # Create output path with same filename, optionally appending the polygon field
+    # value (sanitised) to the stem.
+    output_name = input_path.name
+    if polygon_value and getattr(config, "POLYGON_APPEND_FILENAME", False):
+        stem = input_path.stem
+        suffix = input_path.suffix
+        safe = _sanitise_filename_fragment(str(polygon_value))
+        if safe:
+            output_name = f"{stem}_{safe}{suffix}"
+    output_path = output_dir / output_name
+
     # Handle file collision
     if output_path.exists():
         if collision_mode == 'skip':
@@ -306,14 +328,31 @@ def process_single_image(args_tuple: Tuple[Path, Path, str, dict, object, object
         elif collision_mode == 'rename':
             output_path = get_unique_output_path(output_path)
             logging.debug(f"Renamed output to: {output_path.name}")
-    
+
     # Process the image
-    success = process_image(str(input_path), str(output_path), address=address, chainage=chainage, location_edited=location_edited)
-    
+    success = process_image(
+        str(input_path), str(output_path),
+        address=address, chainage=chainage,
+        location_edited=location_edited,
+        polygon_value=polygon_value,
+    )
+
     if success:
         return True, input_path.name, "processed successfully"
     else:
         return False, input_path.name, "processing failed"
+
+
+def _sanitise_filename_fragment(value: str) -> str:
+    """Return a filesystem-safe representation of *value* suitable for filename use."""
+    if not value:
+        return ""
+    # Replace invalid path characters with underscore, trim whitespace
+    invalid = '<>:"/\\|?*\r\n\t'
+    cleaned = "".join("_" if ch in invalid else ch for ch in value).strip()
+    cleaned = "_".join(cleaned.split())  # collapse whitespace
+    # Trim length so filenames don't explode
+    return cleaned[:80]
 
 
 def main():

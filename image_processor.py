@@ -28,7 +28,16 @@ def create_overlay_text(metadata: dict) -> str:
     # Add project info at the top (if available)
     if metadata.get('project_info'):
         lines.append(metadata['project_info'])
+        # If the polygon field value should live with project info, place it
+        # right below the project info before the blank separator line.
+        if metadata.get('polygon_value') and config.POLYGON_APPEND_PROJECT_INFO:
+            lines.append(metadata['polygon_value'])
         lines.append('')  # Add blank line separator
+    elif metadata.get('polygon_value') and config.POLYGON_APPEND_PROJECT_INFO:
+        # No project info configured, but the user still wants the polygon
+        # value shown as its own top-of-overlay line.
+        lines.append(metadata['polygon_value'])
+        lines.append('')
     
     # Add filename (if available)
     if metadata.get('filename'):
@@ -122,7 +131,7 @@ def load_font_with_fallback() -> ImageFont.FreeTypeFont:
             return ImageFont.load_default()
 
 
-def process_image(input_path: str, output_path: str, address: str = None, chainage: str = None, location_edited: bool = False) -> bool:
+def process_image(input_path: str, output_path: str, address: str = None, chainage: str = None, location_edited: bool = False, polygon_value: str = None) -> bool:
     """
     Process a single image by adding metadata overlay.
     
@@ -131,6 +140,8 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
         output_path: Path to save processed image
         address: Pre-computed address string from geocoding (or None)
         chainage: Pre-computed chainage string, e.g. "kp 1+234" (or None)
+        location_edited: Whether the image's GPS was manually edited
+        polygon_value: Pre-computed polygon field value for this image (or None)
         
     Returns:
         True if successful, False otherwise
@@ -159,6 +170,9 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
             metadata['chainage'] = chainage
 
         metadata['location_edited'] = location_edited
+
+        if polygon_value:
+            metadata['polygon_value'] = polygon_value
         
         # Convert direction to cardinal if available and enabled
         if config.SHOW_DIRECTION and metadata.get('direction') is not None:
