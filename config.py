@@ -62,6 +62,12 @@ CHAINAGE_PRECISION = 1        # Round chainage to nearest N metres (must be ≥ 
 SHOW_CHAINAGE_OFFSET = False  # Append L/R perpendicular offset to the chainage text
 CHAINAGE_START_M = 0.0        # Offset added to all chainage values before display (e.g. 1500 to start at km 1+500)
 
+# Polygon layer settings (e.g. from a GeoPackage). The value looked up from the active
+# polygon layer (based on the image GPS point) can be optionally added to the overlay
+# text and/or appended to the output filename.
+POLYGON_APPEND_PROJECT_INFO = False  # Append the polygon field value as its own line after project info
+POLYGON_APPEND_FILENAME = False      # Append the polygon field value to the output filename
+
 
 def validate_config():
     """

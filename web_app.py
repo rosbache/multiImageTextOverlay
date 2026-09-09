@@ -57,6 +57,18 @@ reversegeocodeProgress: dict = {"running": False, "done": 0, "total": 0}  # live
 active_line: Optional[dict] = None   # {line: LineGeometry, geojson, markers_geojson}
 sosi_temp_path: Optional[str] = None  # path of the currently loaded SOSI file
 
+# Active polygon overlay layer state
+# Populated when a user picks a GeoPackage layer + field.
+# Structure: {
+#   "source_path": str,
+#   "layer": str,
+#   "field": str,
+#   "features": list[{"value": str, "geometry": shapely.geometry}],  # geometry in EPSG:4326
+#   "geojson": dict,  # FeatureCollection in EPSG:4326 for the map
+# }
+active_polygon_layer: Optional[dict] = None
+gpkg_temp_path: Optional[str] = None  # path of the currently loaded GeoPackage
+
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -106,6 +118,9 @@ class OverlaySettings(BaseModel):
     chainage_precision: int = 1
     show_chainage_offset: bool = False
     chainage_start_m: float = 0.0
+    # Polygon overlay layer
+    polygon_append_project_info: bool = False
+    polygon_append_filename: bool = False
 
 
 class PreviewRequest(BaseModel):
@@ -147,6 +162,15 @@ class CalculateChainagesRequest(BaseModel):
     start_m: float = 0.0
 
 
+class LoadGpkgPathRequest(BaseModel):
+    path: str
+
+
+class SelectPolygonLayerRequest(BaseModel):
+    layer: str
+    field: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -178,6 +202,8 @@ def _settings_to_config_dict(s: OverlaySettings) -> dict:
         "CHAINAGE_PRECISION": s.chainage_precision,
         "SHOW_CHAINAGE_OFFSET": s.show_chainage_offset,
         "CHAINAGE_START_M": s.chainage_start_m,
+        "POLYGON_APPEND_PROJECT_INFO": s.polygon_append_project_info,
+        "POLYGON_APPEND_FILENAME": s.polygon_append_filename,
     }
 
 
@@ -259,7 +285,128 @@ def _lookup_address(image_path: Path) -> Optional[str]:
     return None
 
 
-def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[str] = None) -> bytes:
+def _lookup_polygon_value(lat: Optional[float], lon: Optional[float]) -> Optional[str]:
+    """Return the active polygon field value that contains (lat, lon), or None."""
+    if lat is None or lon is None or active_polygon_layer is None:
+        return None
+    try:
+        from shapely.geometry import Point
+        pt = Point(lon, lat)  # shapely x=lon, y=lat (EPSG:4326)
+        for feat in active_polygon_layer.get("features", []):
+            geom = feat.get("geometry")
+            if geom is None:
+                continue
+            try:
+                if geom.covers(pt) or geom.contains(pt):
+                    return feat.get("value")
+            except Exception:
+                continue
+    except Exception as e:
+        logger.warning(f"Polygon lookup failed for ({lat}, {lon}): {e}")
+    return None
+
+
+def _read_gpkg_layers(path: str) -> list[dict]:
+    """List layers of a GeoPackage (or other vector file). Returns list of dicts
+    with {name, geometry_type}."""
+    import pyogrio
+    layers = pyogrio.list_layers(path)
+    out = []
+    for row in layers:
+        # pyogrio returns a numpy array [layer_name, geometry_type]
+        name = str(row[0])
+        geom_type = str(row[1]) if len(row) > 1 else ""
+        out.append({"name": name, "geometry_type": geom_type})
+    return out
+
+
+def _read_gpkg_layer_fields(path: str, layer: str) -> list[str]:
+    """Return the list of non-geometry attribute field names of *layer*."""
+    import geopandas as gpd
+    gdf = gpd.read_file(path, layer=layer, rows=1)
+    return [c for c in gdf.columns if c != gdf.geometry.name]
+
+
+def _load_polygon_layer(path: str, layer: str, field: Optional[str]) -> dict:
+    """
+    Load a polygon layer and prepare state for the map + point-in-polygon lookups.
+    Only polygon/multipolygon features are kept. Coordinates are re-projected to
+    EPSG:4326 for Leaflet.
+    """
+    import geopandas as gpd
+
+    gdf = gpd.read_file(path, layer=layer)
+    if gdf.empty:
+        raise ValueError(f"Layer '{layer}' has no features.")
+
+    # Keep only polygonal features
+    gdf = gdf[gdf.geometry.notna()]
+    poly_mask = gdf.geometry.geom_type.isin(("Polygon", "MultiPolygon"))
+    gdf = gdf[poly_mask]
+    if gdf.empty:
+        raise ValueError(f"Layer '{layer}' contains no polygon features.")
+
+    if gdf.crs is None:
+        # Assume already lat/lon if no CRS was declared
+        logger.warning(f"Layer '{layer}' has no CRS, assuming EPSG:4326")
+        gdf = gdf.set_crs(4326)
+    gdf = gdf.to_crs(4326)
+
+    # Pick a field. If not provided, use the first non-geometry column.
+    if field is None or field == "":
+        non_geom_cols = [c for c in gdf.columns if c != gdf.geometry.name]
+        field = non_geom_cols[0] if non_geom_cols else ""
+    if field and field not in gdf.columns:
+        raise ValueError(f"Field '{field}' not found in layer '{layer}'.")
+
+    features_list = []
+    geojson_features = []
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        value = "" if not field else ("" if row.get(field) is None else str(row.get(field)))
+        features_list.append({"value": value, "geometry": geom})
+        geojson_features.append({
+            "type": "Feature",
+            "properties": {"name": value, "field": field},
+            "geometry": geom.__geo_interface__,
+        })
+
+    geojson = {"type": "FeatureCollection", "features": geojson_features}
+    return {
+        "source_path": path,
+        "layer": layer,
+        "field": field,
+        "features": features_list,
+        "geojson": geojson,
+    }
+
+
+def _build_polygon_value_map(jpg_files: list[Path]) -> dict[str, Optional[str]]:
+    """For each image file compute the polygon field value that contains it (or None)."""
+    result: dict[str, Optional[str]] = {}
+    if active_polygon_layer is None:
+        return {f.name: None for f in jpg_files}
+    from exif_handler import extract_exif_data
+    for f in jpg_files:
+        fn = f.name
+        if fn in location_overrides:
+            lat = location_overrides[fn]["lat"]
+            lon = location_overrides[fn]["lon"]
+        else:
+            try:
+                meta = extract_exif_data(str(f), filename=fn)
+                lat = meta.get("_lat_decimal")
+                lon = meta.get("_lon_decimal")
+            except Exception:
+                lat = lon = None
+        result[fn] = _lookup_polygon_value(lat, lon)
+    return result
+
+
+def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[str] = None,
+                           polygon_value: Optional[str] = None) -> bytes:
     """
     Run process_image in-process (called via asyncio.to_thread).
     Returns PNG bytes of the processed image scaled to max 1200px wide.
@@ -293,7 +440,7 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[s
 
     out_path = Path(tempfile.gettempdir()) / f"preview_{uuid.uuid4().hex}.jpg"
     try:
-        success = process_image(working_path, str(out_path), address=address, chainage=chainage, location_edited=needs_temp_copy)
+        success = process_image(working_path, str(out_path), address=address, chainage=chainage, location_edited=needs_temp_copy, polygon_value=polygon_value)
         if not success:
             raise RuntimeError("process_image returned False")
 
@@ -315,7 +462,8 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[s
 
 def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
                    cfg_dict: dict, collision_mode: str, max_workers: int,
-                   address_map: dict, chainage_map: dict, edited_map: dict = None):
+                   address_map: dict, chainage_map: dict, edited_map: dict = None,
+                   polygon_map: dict = None):
     """
     Execute batch processing in a background thread.
     Calls process_single_image workers via ProcessPoolExecutor.
@@ -326,8 +474,14 @@ def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
     jobs[job_id]["total"] = len(jpg_files)
 
     _edited_map = edited_map or {}
+    _polygon_map = polygon_map or {}
     process_args = [
-        (jpg, output_dir, collision_mode, cfg_dict, address_map.get(jpg.name), chainage_map.get(jpg.name), _edited_map.get(jpg.name, False))
+        (
+            jpg, output_dir, collision_mode, cfg_dict,
+            address_map.get(jpg.name), chainage_map.get(jpg.name),
+            _edited_map.get(jpg.name, False),
+            _polygon_map.get(jpg.name),
+        )
         for jpg in jpg_files
     ]
 
@@ -392,6 +546,8 @@ async def get_settings():
         "chainage_precision": config.CHAINAGE_PRECISION,
         "show_chainage_offset": config.SHOW_CHAINAGE_OFFSET,
         "chainage_start_m": getattr(config, "CHAINAGE_START_M", 0.0),
+        "polygon_append_project_info": getattr(config, "POLYGON_APPEND_PROJECT_INFO", False),
+        "polygon_append_filename": getattr(config, "POLYGON_APPEND_FILENAME", False),
     }
 
 
@@ -622,9 +778,25 @@ async def generate_preview(req: PreviewRequest):
         except Exception as e:
             logger.warning(f"Chainage calc failed for preview {req.filename}: {e}")
 
+    # Compute polygon field value for this image if a polygon layer is active
+    polygon_value_str: Optional[str] = None
+    if active_polygon_layer is not None:
+        try:
+            from exif_handler import extract_exif_data
+            if req.filename in location_overrides:
+                ov = location_overrides[req.filename]
+                lat, lon = ov["lat"], ov["lon"]
+            else:
+                meta = extract_exif_data(str(input_path), filename=req.filename)
+                lat = meta.get("_lat_decimal")
+                lon = meta.get("_lon_decimal")
+            polygon_value_str = _lookup_polygon_value(lat, lon)
+        except Exception as e:
+            logger.warning(f"Polygon lookup failed for preview {req.filename}: {e}")
+
     try:
         img_bytes = await asyncio.to_thread(
-            _generate_preview_sync, str(input_path), cfg_dict, chainage_str
+            _generate_preview_sync, str(input_path), cfg_dict, chainage_str, polygon_value_str
         )
     except Exception as e:
         logger.error(f"Preview failed: {e}")
@@ -827,11 +999,15 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
         except Exception as e:
             logger.warning(f"Chainage batch calculation failed: {e}")
 
+    # Build polygon-value map if a polygon layer is active
+    polygon_map: dict[str, Optional[str]] = _build_polygon_value_map(jpg_files)
+
     background_tasks.add_task(
         _run_batch_job,
         job_id, jpg_files, output_dir,
         cfg_dict, req.settings.file_collision_mode,
         req.settings.max_workers, address_map, chainage_map, edited_map,
+        polygon_map,
     )
 
     return {"job_id": job_id, "total": len(jpg_files)}
@@ -1041,3 +1217,139 @@ async def cleanup_session():
                     removed += 1
             item.rmdir()
     return {"removed": removed}
+
+
+# ---------------------------------------------------------------------------
+# GeoPackage polygon overlay endpoints
+# ---------------------------------------------------------------------------
+
+def _layer_summary(path: str, layer_name: str) -> dict:
+    """Build a lightweight summary dict for a single layer of *path*."""
+    try:
+        fields = _read_gpkg_layer_fields(path, layer_name)
+    except Exception as e:
+        fields = []
+        logger.warning(f"Could not read fields for layer {layer_name}: {e}")
+    return {"name": layer_name, "fields": fields}
+
+
+@app.post("/api/load-gpkg-path")
+async def load_gpkg_path(req: LoadGpkgPathRequest):
+    """Read layers of a GeoPackage from a filesystem path."""
+    global gpkg_temp_path
+    path = Path(req.path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=400, detail=f"File not found: {req.path}")
+    if path.suffix.lower() not in (".gpkg", ".geojson", ".json", ".shp"):
+        # Still allow; pyogrio may handle other formats. Warn but continue.
+        logger.warning(f"Unusual polygon layer extension: {path.suffix}")
+    try:
+        layers = _read_gpkg_layers(str(path))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read layers: {e}")
+
+    # Only return polygon layers, but expose the geometry type so client can filter.
+    layer_infos = []
+    for lyr in layers:
+        info = _layer_summary(str(path), lyr["name"])
+        info["geometry_type"] = lyr["geometry_type"]
+        layer_infos.append(info)
+
+    gpkg_temp_path = str(path)
+    return {"layers": layer_infos, "source_path": str(path)}
+
+
+@app.post("/api/upload-gpkg")
+async def upload_gpkg(file: UploadFile = File(...)):
+    """Accept an uploaded GeoPackage file and return its layer summary."""
+    global gpkg_temp_path
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in (".gpkg", ".geojson", ".json"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be .gpkg or .geojson")
+    session_dir = TEMP_UPLOAD_DIR / uuid.uuid4().hex
+    session_dir.mkdir(parents=True, exist_ok=True)
+    dest = session_dir / file.filename
+    content = await file.read()
+    dest.write_bytes(content)
+    try:
+        layers = _read_gpkg_layers(str(dest))
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Failed to read layers: {e}")
+
+    layer_infos = []
+    for lyr in layers:
+        info = _layer_summary(str(dest), lyr["name"])
+        info["geometry_type"] = lyr["geometry_type"]
+        layer_infos.append(info)
+
+    gpkg_temp_path = str(dest)
+    return {"layers": layer_infos, "source_path": str(dest)}
+
+
+@app.get("/api/gpkg-layer-fields")
+async def gpkg_layer_fields(layer: str):
+    """Return the attribute field names for *layer* of the currently loaded GeoPackage."""
+    if gpkg_temp_path is None:
+        raise HTTPException(status_code=400, detail="No GeoPackage loaded. Load a file first.")
+    try:
+        fields = _read_gpkg_layer_fields(gpkg_temp_path, layer)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read fields for {layer}: {e}")
+    return {"layer": layer, "fields": fields}
+
+
+@app.post("/api/select-polygon-layer")
+async def select_polygon_layer(req: SelectPolygonLayerRequest):
+    """Load a specific polygon layer + field and store it as the active layer."""
+    global active_polygon_layer
+    if gpkg_temp_path is None:
+        raise HTTPException(status_code=400, detail="No GeoPackage loaded. Load a file first.")
+    try:
+        state = _load_polygon_layer(gpkg_temp_path, req.layer, req.field)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to load layer '{req.layer}': {e}")
+    active_polygon_layer = state
+    return {
+        "layer": state["layer"],
+        "field": state["field"],
+        "feature_count": len(state["features"]),
+        "geojson": state["geojson"],
+    }
+
+
+@app.get("/api/polygon-layer")
+async def get_polygon_layer():
+    """Return the currently active polygon layer's GeoJSON (if any)."""
+    if active_polygon_layer is None:
+        raise HTTPException(status_code=404, detail="No polygon layer loaded")
+    return {
+        "layer": active_polygon_layer["layer"],
+        "field": active_polygon_layer["field"],
+        "feature_count": len(active_polygon_layer["features"]),
+        "geojson": active_polygon_layer["geojson"],
+    }
+
+
+@app.delete("/api/clear-polygon-layer")
+async def clear_polygon_layer():
+    """Remove the active polygon layer from memory."""
+    global active_polygon_layer
+    active_polygon_layer = None
+    return {"status": "cleared"}
+
+
+@app.get("/api/polygon-values")
+async def polygon_values(source_folder: str):
+    """Return per-image polygon field values for images in *source_folder*."""
+    if active_polygon_layer is None:
+        raise HTTPException(status_code=400, detail="No polygon layer loaded")
+    folder = Path(source_folder)
+    if not folder.exists() or not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {source_folder}")
+    jpg_files = _get_jpg_files(str(folder))
+    values = _build_polygon_value_map(jpg_files)
+    return {"values": values, "field": active_polygon_layer["field"]}
+

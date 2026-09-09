@@ -473,6 +473,17 @@
       white-space: nowrap;
     }
     .chainage-tooltip::before { display: none !important; }
+    .polygon-label {
+      background: rgba(20, 30, 50, 0.75) !important;
+      color: #fff !important;
+      border: 1px solid rgba(255, 200, 100, 0.55) !important;
+      border-radius: 4px !important;
+      padding: 2px 6px !important;
+      font-size: .72rem !important;
+      font-weight: 600 !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.4) !important;
+    }
+    .polygon-label::before { display: none !important; }
     #line-status { font-size: .72rem; color: var(--accent2); padding: 2px 0; min-height: 16px; }
     #chainage-last-exact { font-size: .72rem; color: var(--muted); min-height: 16px; }
     .sosi-load-row { display: flex; gap: 5px; align-items: flex-end; }
@@ -744,6 +755,51 @@
         </div>
       </details>
 
+      <details>
+        <summary>Polygon layer (GeoPackage)</summary>
+        <div class="settings-body">
+          <!-- Load from path -->
+          <label>GeoPackage file path</label>
+          <div class="sosi-load-row">
+            <input type="text" id="s-gpkg-path" placeholder="C:\path\to\file.gpkg" style="background:var(--input-bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:.82rem;padding:5px 8px;outline:none;" />
+            <button class="btn" id="btn-load-gpkg-path" style="padding:5px 10px;font-size:.78rem">Load</button>
+          </div>
+          <div class="sosi-or-divider">— or upload —</div>
+          <div class="sosi-load-row">
+            <label style="flex:1;margin:0">
+              <input type="file" id="s-gpkg-upload" accept=".gpkg,.geojson,.json" style="background:var(--input-bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:.78rem;padding:4px 6px;outline:none;width:100%;" />
+            </label>
+            <button class="btn" id="btn-upload-gpkg" style="padding:5px 10px;font-size:.78rem">Upload</button>
+          </div>
+          <!-- Layer + field selection -->
+          <label>Select layer
+            <select id="s-gpkg-layer" disabled>
+              <option value="">— load a GeoPackage first —</option>
+            </select>
+          </label>
+          <label>Select field
+            <select id="s-gpkg-field" disabled>
+              <option value="">— pick a layer first —</option>
+            </select>
+          </label>
+          <div style="display:flex;gap:5px">
+            <button class="btn btn-accent" id="btn-apply-polygon" disabled style="flex:1;font-size:.78rem;padding:6px 8px">Apply Layer</button>
+            <button class="btn" id="btn-clear-polygon" disabled style="font-size:.78rem;padding:6px 8px">Clear</button>
+          </div>
+          <div id="polygon-status" style="font-size:.72rem;color:var(--muted);min-height:1em"></div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:2px 0" />
+          <label class="check-row">
+            <input type="checkbox" id="s-polygon-append-project-info" />
+            Add field to project description
+          </label>
+          <label class="check-row">
+            <input type="checkbox" id="s-polygon-append-filename" />
+            Append field to output filename
+          </label>
+          <div id="polygon-preview-value" style="font-size:.72rem;color:var(--muted);min-height:1em"></div>
+        </div>
+      </details>
+
     </div>
   </div>
 
@@ -932,6 +988,8 @@ async function loadDefaults() {
     document.getElementById('s-chainage-precision').value = d.chainage_precision || 1;
     document.getElementById('s-show-chainage-offset').checked = d.show_chainage_offset || false;
     document.getElementById('s-chainage-start-m').value = d.chainage_start_m || 0;
+    document.getElementById('s-polygon-append-project-info').checked = d.polygon_append_project_info || false;
+    document.getElementById('s-polygon-append-filename').checked = d.polygon_append_filename || false;
   } catch (e) {
     console.error('Failed to load defaults', e);
   }
@@ -993,6 +1051,8 @@ function gatherSettings() {
     chainage_precision: parseInt(document.getElementById('s-chainage-precision').value) || 1,
     show_chainage_offset: document.getElementById('s-show-chainage-offset').checked,
     chainage_start_m: parseFloat(document.getElementById('s-chainage-start-m').value) || 0,
+    polygon_append_project_info: document.getElementById('s-polygon-append-project-info').checked,
+    polygon_append_filename: document.getElementById('s-polygon-append-filename').checked,
   };
 }
 
@@ -1791,6 +1851,14 @@ function initMap() {
         if (d) renderLine(d.geojson_line, d.markers_geojson);
       });
     }
+    // Load an active polygon layer if the backend already has one
+    fetch('/api/polygon-layer').then(r => r.ok ? r.json() : null).then(d => {
+      if (d && d.geojson) {
+        polygonLayerActive = true;
+        polygonLayerMeta = {layer: d.layer, field: d.field, feature_count: d.feature_count};
+        renderPolygonLayer(d.geojson);
+      }
+    }).catch(() => {});
   });
 }
 
@@ -2346,6 +2414,257 @@ document.getElementById('s-chainage-label-interval').addEventListener('change', 
     renderLine(lastLineGeojson.geojson_line, lastLineGeojson.markers_geojson);
   }
 });
+
+// ── Polygon layer (GeoPackage) ──
+let polygonLayer = null;          // Leaflet layer group for polygon overlay
+let polygonLayerActive = false;   // Whether an active polygon layer is loaded on backend
+let polygonLayerMeta = null;      // {layer, field, feature_count}
+let polygonValueMap = {};         // filename -> polygon field value
+
+function _polygonStyle() {
+  return {
+    color: '#ffc247',
+    weight: 2,
+    opacity: 0.9,
+    fillColor: '#ffc247',
+    fillOpacity: 0.18,
+  };
+}
+
+function _populateGpkgLayers(layerInfos) {
+  const layerSel = document.getElementById('s-gpkg-layer');
+  const fieldSel = document.getElementById('s-gpkg-field');
+  layerSel.innerHTML = '';
+  fieldSel.innerHTML = '<option value="">— pick a layer first —</option>';
+  fieldSel.disabled = true;
+  document.getElementById('btn-apply-polygon').disabled = true;
+
+  // Only offer polygon layers (Polygon / MultiPolygon / Unknown)
+  const polygonalTypes = new Set(['Polygon', 'MultiPolygon', 'Unknown', 'GeometryCollection', '']);
+  const usable = layerInfos.filter(l => polygonalTypes.has(l.geometry_type));
+  if (usable.length === 0) {
+    layerSel.innerHTML = '<option value="">— no polygon layers found —</option>';
+    layerSel.disabled = true;
+    return;
+  }
+  for (const l of usable) {
+    const opt = document.createElement('option');
+    opt.value = l.name;
+    opt.textContent = `${l.name} (${l.geometry_type || 'polygon'})`;
+    opt.dataset.fields = JSON.stringify(l.fields || []);
+    layerSel.appendChild(opt);
+  }
+  layerSel.disabled = false;
+  // Auto-populate fields for first layer
+  _populateGpkgFieldsForCurrentLayer();
+}
+
+function _populateGpkgFieldsForCurrentLayer() {
+  const layerSel = document.getElementById('s-gpkg-layer');
+  const fieldSel = document.getElementById('s-gpkg-field');
+  fieldSel.innerHTML = '';
+  const opt = layerSel.selectedOptions[0];
+  if (!opt || !opt.value) {
+    fieldSel.disabled = true;
+    fieldSel.innerHTML = '<option value="">— pick a layer first —</option>';
+    document.getElementById('btn-apply-polygon').disabled = true;
+    return;
+  }
+  let fields = [];
+  try { fields = JSON.parse(opt.dataset.fields || '[]'); } catch (e) { fields = []; }
+  if (fields.length === 0) {
+    fieldSel.innerHTML = '<option value="">— no fields —</option>';
+    fieldSel.disabled = true;
+    document.getElementById('btn-apply-polygon').disabled = true;
+    return;
+  }
+  for (const f of fields) {
+    const o = document.createElement('option');
+    o.value = f;
+    o.textContent = f;
+    fieldSel.appendChild(o);
+  }
+  fieldSel.disabled = false;
+  document.getElementById('btn-apply-polygon').disabled = false;
+}
+
+async function loadGpkgFromPath() {
+  const path = document.getElementById('s-gpkg-path').value.trim();
+  if (!path) { setStatus('Enter a GeoPackage file path first', 'err'); return; }
+  setStatus('Loading GeoPackage…', 'info');
+  try {
+    const res = await fetch('/api/load-gpkg-path', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      setStatus(err.detail || 'Failed to load GeoPackage', 'err');
+      return;
+    }
+    const d = await res.json();
+    _populateGpkgLayers(d.layers || []);
+    document.getElementById('polygon-status').textContent =
+      `${(d.layers || []).length} layer(s) found`;
+    setStatus('GeoPackage loaded — pick a layer + field and click Apply Layer', 'ok');
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'err');
+  }
+}
+
+async function uploadGpkgFile() {
+  const fileInput = document.getElementById('s-gpkg-upload');
+  if (!fileInput.files || fileInput.files.length === 0) {
+    setStatus('Select a GeoPackage to upload first', 'err');
+    return;
+  }
+  setStatus('Uploading GeoPackage…', 'info');
+  try {
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    const res = await fetch('/api/upload-gpkg', {method: 'POST', body: formData});
+    if (!res.ok) {
+      const err = await res.json();
+      setStatus(err.detail || 'Upload failed', 'err');
+      return;
+    }
+    const d = await res.json();
+    _populateGpkgLayers(d.layers || []);
+    document.getElementById('polygon-status').textContent =
+      `${(d.layers || []).length} layer(s) found in uploaded file`;
+    setStatus('GeoPackage uploaded — pick a layer + field and click Apply Layer', 'ok');
+  } catch (e) {
+    setStatus('Upload error: ' + e.message, 'err');
+  }
+}
+
+async function applyPolygonLayer() {
+  const layerSel = document.getElementById('s-gpkg-layer');
+  const fieldSel = document.getElementById('s-gpkg-field');
+  const layer = layerSel.value;
+  const field = fieldSel.value;
+  if (!layer) { setStatus('Pick a layer first', 'err'); return; }
+  setStatus('Applying polygon layer…', 'info');
+  try {
+    const res = await fetch('/api/select-polygon-layer', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({layer, field}),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      setStatus(err.detail || 'Failed to apply polygon layer', 'err');
+      return;
+    }
+    const d = await res.json();
+    polygonLayerActive = true;
+    polygonLayerMeta = {layer: d.layer, field: d.field, feature_count: d.feature_count};
+    document.getElementById('btn-clear-polygon').disabled = false;
+    document.getElementById('polygon-status').textContent =
+      `Layer '${d.layer}', field '${d.field}' — ${d.feature_count} polygon(s)`;
+    setStatus(`Polygon layer applied — ${d.feature_count} feature(s)`, 'ok');
+    renderPolygonLayer(d.geojson);
+    // Refresh per-image polygon values (for popups + preview text)
+    await fetchPolygonValues();
+    schedulePreviewUpdate();
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'err');
+  }
+}
+
+function renderPolygonLayer(geojson) {
+  if (!map) return;
+  if (polygonLayer) { map.removeLayer(polygonLayer); polygonLayer = null; }
+  if (!geojson || !geojson.features || geojson.features.length === 0) return;
+  polygonLayer = L.geoJSON(geojson, {
+    style: _polygonStyle,
+    onEachFeature: (feature, layer) => {
+      const name = feature?.properties?.name;
+      if (name) {
+        layer.bindTooltip(String(name), {
+          permanent: true,
+          direction: 'center',
+          className: 'polygon-label',
+          sticky: false,
+        });
+        layer.bindPopup(`<strong>${String(name)}</strong>`);
+      }
+    },
+  }).addTo(map);
+  // If no image markers are visible yet, zoom to the polygon extent so the user can see them.
+  if (!markers || Object.keys(markers).length === 0) {
+    try {
+      const b = polygonLayer.getBounds();
+      if (b && b.isValid && b.isValid()) map.fitBounds(b, { padding: [40, 40] });
+    } catch (_) { /* ignore */ }
+  }
+  // Ensure image markers stay above polygons for clickability
+  Object.values(markers || {}).forEach(m => { try { m.bringToFront(); } catch (_) {} });
+}
+
+async function clearPolygonLayer() {
+  try { await fetch('/api/clear-polygon-layer', {method: 'DELETE'}); } catch (_) {}
+  polygonLayerActive = false;
+  polygonLayerMeta = null;
+  polygonValueMap = {};
+  if (map && polygonLayer) { map.removeLayer(polygonLayer); polygonLayer = null; }
+  document.getElementById('polygon-status').textContent = '';
+  document.getElementById('polygon-preview-value').textContent = '';
+  document.getElementById('btn-clear-polygon').disabled = true;
+  setStatus('Polygon layer cleared', 'info');
+  schedulePreviewUpdate();
+}
+
+async function fetchPolygonValues() {
+  if (!polygonLayerActive || !state.sourceFolder) { polygonValueMap = {}; return; }
+  try {
+    const res = await fetch('/api/polygon-values?source_folder=' + encodeURIComponent(state.sourceFolder));
+    if (!res.ok) return;
+    const d = await res.json();
+    polygonValueMap = d.values || {};
+    _updatePolygonPreviewValue();
+  } catch (e) {
+    console.error('Failed to fetch polygon values', e);
+  }
+}
+
+function _updatePolygonPreviewValue() {
+  const el = document.getElementById('polygon-preview-value');
+  if (!polygonLayerActive) { el.textContent = ''; return; }
+  const fn = state.selectedImage;
+  if (!fn) { el.textContent = `Field: ${polygonLayerMeta?.field || ''}`; return; }
+  const v = polygonValueMap[fn];
+  el.textContent = v ? `${fn} → ${v}` : `${fn} → (outside all polygons)`;
+}
+
+document.getElementById('btn-load-gpkg-path').addEventListener('click', loadGpkgFromPath);
+document.getElementById('s-gpkg-path').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadGpkgFromPath();
+});
+document.getElementById('btn-upload-gpkg').addEventListener('click', uploadGpkgFile);
+document.getElementById('s-gpkg-layer').addEventListener('change', _populateGpkgFieldsForCurrentLayer);
+document.getElementById('btn-apply-polygon').addEventListener('click', applyPolygonLayer);
+document.getElementById('btn-clear-polygon').addEventListener('click', clearPolygonLayer);
+
+// Refresh polygon values when the image folder changes.
+// We piggyback on refreshMapLocations by wrapping it, since polygon lookup depends on GPS.
+const _origRefreshMapLocations = refreshMapLocations;
+refreshMapLocations = async function () {
+  await _origRefreshMapLocations.apply(this, arguments);
+  if (polygonLayerActive) await fetchPolygonValues();
+};
+
+// Update the "selected image → polygon value" hint when selection changes
+const _origSelectImageFromMap = selectImageFromMap;
+selectImageFromMap = function (filename) {
+  _origSelectImageFromMap.apply(this, arguments);
+  _updatePolygonPreviewValue();
+};
+
+// Also update on list-item click by patching handleItemClick's post effect
+document.addEventListener('click', () => setTimeout(_updatePolygonPreviewValue, 0), true);
+
 
 </script>
 
