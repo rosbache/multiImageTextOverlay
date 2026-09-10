@@ -579,7 +579,14 @@
 
   <!-- ══ LEFT: Settings ══ -->
   <div class="panel">
-    <div class="panel-title">Settings</div>
+    <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <span>Settings</span>
+      <div style="display:flex;gap:4px">
+        <button class="btn" id="btn-save-settings" title="Download all settings as a JSON file" style="padding:3px 8px;font-size:.72rem">Save</button>
+        <button class="btn" id="btn-load-settings" title="Load settings from a JSON file" style="padding:3px 8px;font-size:.72rem">Load</button>
+        <input type="file" id="settings-file-input" accept=".json" style="display:none" />
+      </div>
+    </div>
     <div class="panel-scroll" id="settings-scroll">
 
       <details open>
@@ -984,40 +991,46 @@ function clearStatus() {
   el.textContent = '';
 }
 
+// ── Apply plain (non-file-backed) settings fields to the form ──
+function applyBasicSettingsToForm(d) {
+  document.getElementById('s-project-info').value = d.project_info || '';
+  document.getElementById('s-text-position').value = d.text_position;
+  document.getElementById('s-padding').value = d.padding;
+  document.getElementById('s-font-size').value = d.font_size;
+  document.getElementById('s-text-color').value = rgb2hex(d.text_color_r, d.text_color_g, d.text_color_b);
+  document.getElementById('s-outline-color').value = rgb2hex(d.outline_color_r, d.outline_color_g, d.outline_color_b);
+  document.getElementById('s-outline-width').value = d.outline_width;
+  document.getElementById('s-show-utm').checked = d.show_utm;
+  document.getElementById('s-target-epsg').value = d.target_epsg;
+  document.getElementById('s-utm-zone').value = d.utm_zone;
+  document.getElementById('s-utm-hemisphere').value = d.utm_hemisphere;
+  document.getElementById('s-show-direction').checked = d.show_direction;
+  document.getElementById('s-direction-precision').value = String(d.direction_precision);
+  document.getElementById('s-show-address').checked = d.show_address;
+  document.getElementById('s-geocoder-timeout').value = d.geocoder_timeout;
+  document.getElementById('s-output-quality').value = d.output_quality;
+  document.getElementById('quality-val').textContent = d.output_quality;
+  document.getElementById('s-file-collision').value = d.file_collision_mode;
+  document.getElementById('s-max-workers').value = d.max_workers;
+  if (d.input_dir !== undefined) document.getElementById('folder-path-input').value = d.input_dir || '';
+  document.getElementById('output-path-input').value = d.output_dir || '';
+  document.getElementById('s-show-chainage').checked = d.show_chainage || false;
+  document.getElementById('s-chainage-prefix').value = d.chainage_prefix || 'kp';
+  document.getElementById('s-chainage-precision').value = d.chainage_precision || 1;
+  document.getElementById('s-show-chainage-offset').checked = d.show_chainage_offset || false;
+  document.getElementById('s-chainage-start-m').value = d.chainage_start_m || 0;
+  document.getElementById('s-polygon-append-project-info').checked = d.polygon_append_project_info || false;
+  document.getElementById('s-polygon-append-filename').checked = d.polygon_append_filename || false;
+  if (d.chainage_interval !== undefined) document.getElementById('s-chainage-interval').value = d.chainage_interval;
+  if (d.chainage_label_interval !== undefined) document.getElementById('s-chainage-label-interval').value = d.chainage_label_interval;
+}
+
 // ── Load defaults from API ──
 async function loadDefaults() {
   try {
     const res = await fetch('/api/settings');
     const d = await res.json();
-
-    document.getElementById('s-project-info').value = d.project_info || '';
-    document.getElementById('s-text-position').value = d.text_position;
-    document.getElementById('s-padding').value = d.padding;
-    document.getElementById('s-font-size').value = d.font_size;
-    document.getElementById('s-text-color').value = rgb2hex(d.text_color_r, d.text_color_g, d.text_color_b);
-    document.getElementById('s-outline-color').value = rgb2hex(d.outline_color_r, d.outline_color_g, d.outline_color_b);
-    document.getElementById('s-outline-width').value = d.outline_width;
-    document.getElementById('s-show-utm').checked = d.show_utm;
-    document.getElementById('s-target-epsg').value = d.target_epsg;
-    document.getElementById('s-utm-zone').value = d.utm_zone;
-    document.getElementById('s-utm-hemisphere').value = d.utm_hemisphere;
-    document.getElementById('s-show-direction').checked = d.show_direction;
-    document.getElementById('s-direction-precision').value = String(d.direction_precision);
-    document.getElementById('s-show-address').checked = d.show_address;
-    document.getElementById('s-geocoder-timeout').value = d.geocoder_timeout;
-    document.getElementById('s-output-quality').value = d.output_quality;
-    document.getElementById('quality-val').textContent = d.output_quality;
-    document.getElementById('s-file-collision').value = d.file_collision_mode;
-    document.getElementById('s-max-workers').value = d.max_workers;
-    document.getElementById('folder-path-input').value = d.input_dir || '';
-    document.getElementById('output-path-input').value = d.output_dir || '';
-    document.getElementById('s-show-chainage').checked = d.show_chainage || false;
-    document.getElementById('s-chainage-prefix').value = d.chainage_prefix || 'kp';
-    document.getElementById('s-chainage-precision').value = d.chainage_precision || 1;
-    document.getElementById('s-show-chainage-offset').checked = d.show_chainage_offset || false;
-    document.getElementById('s-chainage-start-m').value = d.chainage_start_m || 0;
-    document.getElementById('s-polygon-append-project-info').checked = d.polygon_append_project_info || false;
-    document.getElementById('s-polygon-append-filename').checked = d.polygon_append_filename || false;
+    applyBasicSettingsToForm(d);
   } catch (e) {
     console.error('Failed to load defaults', e);
   }
@@ -1083,6 +1096,113 @@ function gatherSettings() {
     polygon_append_filename: document.getElementById('s-polygon-append-filename').checked,
   };
 }
+
+// ── Gather all saveable settings, including file-backed line/polygon selections ──
+function gatherFullSettings() {
+  const kurveSel = document.getElementById('s-kurve-select');
+  const gpkgLayerSel = document.getElementById('s-gpkg-layer');
+  const gpkgFieldSel = document.getElementById('s-gpkg-field');
+  return {
+    ...gatherSettings(),
+    input_dir: document.getElementById('folder-path-input').value,
+    chainage_interval: parseFloat(document.getElementById('s-chainage-interval').value) || 25,
+    chainage_label_interval: parseFloat(document.getElementById('s-chainage-label-interval').value) || 50,
+    // Only meaningful when the SOSI/GeoPackage was loaded by path (uploads can't be re-applied on restore)
+    sosi_path: document.getElementById('s-sosi-path').value,
+    kurve_object_id: kurveSel && kurveSel.value ? parseInt(kurveSel.value) : null,
+    reverse_line: document.getElementById('s-reverse-line').checked,
+    gpkg_path: document.getElementById('s-gpkg-path').value,
+    gpkg_layer: gpkgLayerSel ? gpkgLayerSel.value : '',
+    gpkg_field: gpkgFieldSel ? gpkgFieldSel.value : '',
+  };
+}
+
+// ── Apply a saved settings object to the form, re-applying line/polygon layer if paths are present ──
+async function applySettingsToForm(d) {
+  applyBasicSettingsToForm(d);
+
+  if (d.sosi_path) {
+    document.getElementById('s-sosi-path').value = d.sosi_path;
+    try {
+      await loadSosiFromPath();
+      if (d.kurve_object_id !== null && d.kurve_object_id !== undefined) {
+        document.getElementById('s-kurve-select').value = String(d.kurve_object_id);
+        document.getElementById('s-reverse-line').checked = !!d.reverse_line;
+        await applyLine();
+      }
+    } catch (e) {
+      console.error('Failed to re-apply SOSI line from saved settings', e);
+    }
+  }
+
+  if (d.gpkg_path) {
+    document.getElementById('s-gpkg-path').value = d.gpkg_path;
+    try {
+      await loadGpkgFromPath();
+      if (d.gpkg_layer) {
+        document.getElementById('s-gpkg-layer').value = d.gpkg_layer;
+        _populateGpkgFieldsForCurrentLayer();
+        if (d.gpkg_field) document.getElementById('s-gpkg-field').value = d.gpkg_field;
+        await applyPolygonLayer();
+      }
+    } catch (e) {
+      console.error('Failed to re-apply polygon layer from saved settings', e);
+    }
+  }
+}
+
+// ── Persist settings across page reloads ──
+const SETTINGS_STORAGE_KEY = 'overlaySettings_v1';
+
+function saveSettingsToLocalStorage() {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(gatherFullSettings()));
+  } catch (e) {
+    console.error('Failed to save settings to localStorage', e);
+  }
+}
+
+async function restoreSettingsFromLocalStorage() {
+  const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+  if (!raw) return;
+  try {
+    await applySettingsToForm(JSON.parse(raw));
+  } catch (e) {
+    console.error('Failed to restore settings from localStorage', e);
+  }
+}
+
+// ── Export/import settings as a JSON file ──
+function exportSettingsToFile() {
+  const blob = new Blob([JSON.stringify(gatherFullSettings(), null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'overlay_settings.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function importSettingsFromFile(file) {
+  try {
+    const text = await file.text();
+    const d = JSON.parse(text);
+    await applySettingsToForm(d);
+    setStatus('Settings loaded from file', 'ok');
+  } catch (e) {
+    setStatus('Failed to load settings file: ' + e.message, 'err');
+  }
+}
+
+document.getElementById('btn-save-settings').addEventListener('click', exportSettingsToFile);
+document.getElementById('btn-load-settings').addEventListener('click', () => {
+  document.getElementById('settings-file-input').click();
+});
+document.getElementById('settings-file-input').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if (file) importSettingsFromFile(file);
+  e.target.value = '';
+});
 
 // ── Input tab switch ──
 function switchTab(tab) {
@@ -1740,9 +1860,17 @@ document.getElementById('s-output-quality').addEventListener('input', e => {
 (async () => {
   await loadDefaults();
   await loadFonts();
-  document.querySelectorAll('[id^="s-"]').forEach(el => {
+  await restoreSettingsFromLocalStorage();
+  let _autosaveTimer = null;
+  const scheduleAutosave = () => {
+    clearTimeout(_autosaveTimer);
+    _autosaveTimer = setTimeout(saveSettingsToLocalStorage, 400);
+  };
+  document.querySelectorAll('[id^="s-"], #output-path-input').forEach(el => {
     el.addEventListener('input', schedulePreviewUpdate);
     el.addEventListener('change', schedulePreviewUpdate);
+    el.addEventListener('input', scheduleAutosave);
+    el.addEventListener('change', scheduleAutosave);
   });
   // Init map immediately (no tab click needed)
   setTimeout(() => { if (!map) initMap(); }, 0);
