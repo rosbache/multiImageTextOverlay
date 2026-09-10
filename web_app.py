@@ -1324,8 +1324,9 @@ async def select_polygon_layer(req: SelectPolygonLayerRequest):
 async def get_polygon_layer():
     """Return the currently active polygon layer's GeoJSON (if any)."""
     if active_polygon_layer is None:
-        raise HTTPException(status_code=404, detail="No polygon layer loaded")
+        return {"loaded": False, "geojson": None}
     return {
+        "loaded": True,
         "layer": active_polygon_layer["layer"],
         "field": active_polygon_layer["field"],
         "feature_count": len(active_polygon_layer["features"]),
