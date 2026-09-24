@@ -2,6 +2,8 @@
 
 A Python tool for processing JPG images with EXIF-driven text overlays. It supports CLI and FastAPI-based web workflows for metadata overlays, coordinate conversion, address lookup, and GPS correction, and it can also calculate chainage from a SOSI reference line in the web UI.
 
+For Windows executable build and deployment instructions, see [BUILDING.md](BUILDING.md).
+
 ## Features
 
 - Extracts EXIF metadata from JPG images
