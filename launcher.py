@@ -12,10 +12,26 @@ import webbrowser
 import time
 
 
+_dll_directory_handles = []
+
+
 def _resource_path(relative: str) -> str:
     """Return absolute path to a resource, works for dev and PyInstaller bundles."""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, relative)
+
+
+def _configure_native_dlls():
+    """Make bundled native geospatial libraries available to pyogrio on Windows."""
+    if not getattr(sys, "frozen", False) or not hasattr(os, "add_dll_directory"):
+        return
+
+    pyogrio_libs = _resource_path("pyogrio.libs")
+    if not os.path.isdir(pyogrio_libs):
+        return
+
+    _dll_directory_handles.append(os.add_dll_directory(pyogrio_libs))
+    os.environ["PATH"] = pyogrio_libs + os.pathsep + os.environ.get("PATH", "")
 
 
 def _patch_paths():
@@ -55,6 +71,7 @@ if __name__ == "__main__":
     if bundle_dir not in sys.path:
         sys.path.insert(0, bundle_dir)
 
+    _configure_native_dlls()
     _patch_paths()
 
     # Open browser in background thread
