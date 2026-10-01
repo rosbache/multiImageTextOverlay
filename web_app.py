@@ -86,7 +86,7 @@ class OverlaySettings(BaseModel):
     text_position: str = "bottom-left"
     padding: int = 30
     # Font
-    font_size: int = 128
+    font_size: int = 72
     font_path: str = "fonts/arial.ttf"
     # Colors
     text_color_r: int = 255
