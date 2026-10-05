@@ -122,7 +122,7 @@ Click *Process All* to batch-process every loaded image, or *Process Selected* t
 
 Some images may have incorrect GPS coordinates (wrong location metadata). The map-based editor lets you visually correct these before processing:
 
-1. **View locations**: Click the *Map* tab in the center panel to see all images with GPS data plotted on an OpenStreetMap
+1. **View locations**: Click the *Map* tab in the center panel to see all images with GPS data plotted on an interactive map (Kartverket basemap — Norway only)
 2. **Select image**: Click any marker on the map (or select from the image list) to highlight an image
 3. **Edit location**: 
    - Drag the marker to the correct position, or
