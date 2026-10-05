@@ -330,6 +330,8 @@
     .btn-green:hover { background: #245924; }
     .btn-amber { background: #1a1400; border-color: #e9a020; color: #e9a020; }
     .btn-amber:hover { background: #2a2000; }
+    .btn-blue { background: #0d2a4a; border-color: #4aa3ff; color: #4aa3ff; }
+    .btn-blue:hover { background: #123a63; }
     .btn:disabled { opacity: .4; cursor: not-allowed; }
 
     /* Progress */
@@ -939,6 +941,8 @@
   <!-- Process selected / all -->
   <button class="btn btn-amber" id="btn-process-selected" disabled>Process Selected</button>
   <button class="btn btn-green" id="btn-process" disabled>Process All</button>
+  <button class="btn btn-blue" id="btn-export-report" disabled
+          title="Download a ZIP with an HTML report: interactive map, chainage line, polygons and processed images">Export Report</button>
 
   <!-- Geocode progress (shown while background geocoding runs) -->
   <div id="geocode-bar-wrap">
@@ -1772,6 +1776,7 @@ async function triggerProcess(filenames) {
   setStatus(`Starting processing for ${label} image(s)…`, 'info');
   document.getElementById('btn-process').disabled = true;
   document.getElementById('btn-process-selected').disabled = true;
+  document.getElementById('btn-export-report').disabled = true;
 
   try {
     const res = await fetch('/api/process', {
@@ -1810,6 +1815,38 @@ document.getElementById('btn-process-selected').addEventListener('click', () => 
   triggerProcess([...state.selectedSet]);
 });
 
+// ── Export HTML report ──
+document.getElementById('btn-export-report').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-export-report');
+  btn.disabled = true;
+  setStatus('Building HTML report…', 'info');
+  try {
+    const res = await fetch('/api/export-html', { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setStatus(err.detail || 'Export failed', 'err');
+      btn.disabled = false;
+      return;
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^";]+)"?/);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = m ? m[1] : 'report.zip';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus('✓ Report downloaded.', 'ok');
+    btn.disabled = false;
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'err');
+    btn.disabled = false;
+  }
+});
+
 function startProgressStream(jobId, total) {
   if (state.sseSource) state.sseSource.close();
 
@@ -1838,6 +1875,7 @@ function startProgressStream(jobId, total) {
       }
       document.getElementById('btn-process').disabled = false;
       document.getElementById('btn-process-selected').disabled = state.selectedSet.size === 0;
+      document.getElementById('btn-export-report').disabled = false;
     } else if (d.current_file) {
       setStatus(`Processing: ${d.current_file}`, 'info');
     }
@@ -2035,9 +2073,9 @@ function switchCenterTab(tab) {
 function initMap() {
   map = L.map('map').setView([59.9, 10.75], 6);  // Norway default
   
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap',
-    maxZoom: 19
+  L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {
+    attribution: '&copy; <a href="https://www.kartverket.no/">Kartverket</a>',
+    maxNativeZoom: 18, maxZoom: 20
   }).addTo(map);
   
   // Load image locations (and the active line if one is set)
@@ -2379,7 +2417,9 @@ function resetPreviewZoom() {
 function _buildMarkerPopup(loc) {
   const ch = chainageMap[loc.filename];
   const chText = ch ? `<br><span style="color:#ff8c00">${ch.formatted}</span>` : '';
+  const thumbUrl = `/api/thumbnail?source_folder=${encodeURIComponent(state.sourceFolder)}&filename=${encodeURIComponent(loc.filename)}`;
   return `<strong>${loc.filename}</strong><br>
+    <img src="${thumbUrl}" alt="" style="max-width:240px;max-height:180px;margin:2px 0 4px;border-radius:4px;display:block;">
     ${(loc.lat||0).toFixed(6)}, ${(loc.lon||0).toFixed(6)}<br>
     ${loc.address || 'No address'}${chText}`;
 }
