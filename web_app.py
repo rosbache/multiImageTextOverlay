@@ -14,12 +14,14 @@ import os
 import tempfile
 import uuid
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, validator
+from starlette.background import BackgroundTask
 
 import config
 
@@ -52,6 +54,7 @@ jobs: dict[str, dict] = {}          # job_id -> {status, processed, total, resul
 address_cache: dict[tuple, Optional[str]] = {}  # (lat, lon) -> address string
 location_overrides: dict[str, dict] = {}  # filename -> {lat, lon, edited}
 reversegeocodeProgress: dict = {"running": False, "done": 0, "total": 0}  # live geocode progress
+last_export_context: Optional[dict] = None  # snapshot of last completed job for HTML report export
 
 # Active reference line state
 active_line: Optional[dict] = None   # {line: LineGeometry, geojson, markers_geojson}
@@ -468,6 +471,7 @@ def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
     Execute batch processing in a background thread.
     Calls process_single_image workers via ProcessPoolExecutor.
     """
+    global last_export_context
     from main import process_single_image
 
     jobs[job_id]["status"] = "running"
@@ -492,15 +496,21 @@ def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
         for future in future_map:
             name = future_map[future]
             try:
-                success, fname, msg = future.result()
+                success, fname, msg, out_name = future.result()
             except Exception as e:
-                success, fname, msg = False, name, str(e)
-            results.append({"file": fname, "success": success, "message": msg})
+                success, fname, msg, out_name = False, name, str(e), None
+            results.append({"file": fname, "success": success, "message": msg,
+                            "output_file": out_name})
             jobs[job_id]["processed"] += 1
             jobs[job_id]["current_file"] = fname
 
     jobs[job_id]["status"] = "done"
     jobs[job_id]["results"] = results
+
+    # Publish results into the export context so /api/export-html can build a report
+    if last_export_context is not None and last_export_context.get("job_id") == job_id:
+        last_export_context["results"] = results
+        last_export_context["status"] = "done"
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +710,36 @@ async def get_image_locations(source_folder: str):
     return {"locations": locations}
 
 
+@app.get("/api/thumbnail")
+async def get_thumbnail(source_folder: str, filename: str, max_size: int = 320):
+    """Return a small JPEG thumbnail of a source image (used for map popup previews)."""
+    from PIL import Image, ImageOps
+
+    folder = Path(source_folder)
+    if not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory not found: {source_folder}")
+    target = (folder / filename).resolve()
+    try:
+        target.relative_to(folder.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if not target.is_file() or target.suffix.lower() not in (".jpg", ".jpeg"):
+        raise HTTPException(status_code=404, detail=f"Image not found: {filename}")
+
+    def _make_thumb() -> bytes:
+        with Image.open(target) as img:
+            img = ImageOps.exif_transpose(img)
+            img.thumbnail((max_size, max_size))
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=80)
+            return buf.getvalue()
+
+    data = await asyncio.to_thread(_make_thumb)
+    return StreamingResponse(io.BytesIO(data), media_type="image/jpeg")
+
+
 @app.post("/api/update-location")
 async def update_location(req: LocationUpdateRequest):
     """Stage or reset a location override for an image."""
@@ -872,6 +912,7 @@ async def get_exif_data(filename: str, source_folder: str):
 @app.post("/api/process")
 async def start_processing(req: ProcessRequest, background_tasks: BackgroundTasks):
     """Start batch image processing. Returns job_id for SSE progress tracking."""
+    global last_export_context
     source_folder = Path(req.source_folder)
     if not source_folder.exists():
         raise HTTPException(status_code=400, detail="Source folder does not exist")
@@ -1001,6 +1042,40 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
 
     # Build polygon-value map if a polygon layer is active
     polygon_map: dict[str, Optional[str]] = _build_polygon_value_map(jpg_files)
+
+    # Snapshot all state needed for the HTML report export. The export is decoupled
+    # from live state, so clearing the line/layer afterwards does not affect it.
+    last_export_context = {
+        "job_id": job_id,
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "source_folder": str(source_folder),
+        "output_dir": str(output_dir),
+        "settings": cfg_dict,
+        "filenames": [f.name for f in jpg_files],
+        "address_map": dict(address_map),
+        "chainage_map": dict(chainage_map),
+        "polygon_map": dict(polygon_map),
+        "edited_map": dict(edited_map),
+        "line": (
+            {
+                "geojson_line": active_line["geojson_line"],
+                "markers_geojson": active_line["markers_geojson"],
+                "total_length_m": round(active_line["line"].total_length, 1),
+                "epsg": active_line["line"].epsg,
+            }
+            if active_line is not None else None
+        ),
+        "polygon_layer": (
+            {
+                "geojson": active_polygon_layer["geojson"],
+                "layer": active_polygon_layer["layer"],
+                "field": active_polygon_layer["field"],
+            }
+            if active_polygon_layer is not None else None
+        ),
+        "status": "running",
+        "results": [],
+    }
 
     background_tasks.add_task(
         _run_batch_job,
@@ -1353,4 +1428,117 @@ async def polygon_values(source_folder: str):
     jpg_files = _get_jpg_files(str(folder))
     values = _build_polygon_value_map(jpg_files)
     return {"values": values, "field": active_polygon_layer["field"]}
+
+
+# ---------------------------------------------------------------------------
+# HTML report export
+# ---------------------------------------------------------------------------
+
+def _build_export_zip(ctx: dict) -> Path:
+    """
+    Render the HTML report and package it with the processed images into a ZIP.
+    Runs in a worker thread (via asyncio.to_thread). Returns the ZIP file path.
+    """
+    import zipfile
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+    from exif_handler import extract_exif_data
+
+    output_dir = Path(ctx["output_dir"])
+    results = ctx.get("results", [])
+
+    # Per-image entries: join job results with the snapshot maps, read lat/lon
+    # from the processed files (EXIF is preserved, incl. any staged overrides).
+    entries: list[dict] = []
+    failed: list[dict] = []
+    for r in results:
+        fname = r.get("file") or ""
+        if not r.get("success"):
+            failed.append(r)
+            continue
+        out_name = r.get("output_file") or fname
+        out_path = output_dir / out_name
+        if not out_path.is_file():
+            failed.append({"file": fname, "success": False,
+                           "message": f"output file not found: {out_name}"})
+            continue
+        lat = lon = None
+        try:
+            meta = extract_exif_data(str(out_path), filename=fname)
+            lat = meta.get("_lat_decimal")
+            lon = meta.get("_lon_decimal")
+        except Exception as e:
+            logger.warning(f"Could not read EXIF from {out_name} for export: {e}")
+        entries.append({
+            "filename": fname,
+            "output_file": out_name,
+            "lat": lat,
+            "lon": lon,
+            "address": (ctx.get("address_map") or {}).get(fname),
+            "chainage": (ctx.get("chainage_map") or {}).get(fname),
+            "polygon_value": (ctx.get("polygon_map") or {}).get(fname),
+            "edited": (ctx.get("edited_map") or {}).get(fname, False),
+        })
+
+    line_info = ctx.get("line")
+    polygon_info = ctx.get("polygon_layer")
+    settings = ctx.get("settings") or {}
+    has_geo = bool(
+        line_info or polygon_info or any(e["lat"] is not None for e in entries)
+    )
+
+    report_data = {
+        "entries": entries,
+        "line": line_info,
+        "polygon": polygon_info,
+    }
+
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+    template = env.get_template("export_report.html")
+    html = template.render(
+        project_info=settings.get("PROJECT_INFO") or "",
+        created=ctx.get("created") or "",
+        source_folder=ctx.get("source_folder") or "",
+        entries=entries,
+        failed=failed,
+        line=line_info,
+        polygon_layer=polygon_info,
+        has_geo=has_geo,
+        report_data=report_data,
+    )
+
+    zip_path = Path(tempfile.gettempdir()) / f"report_export_{uuid.uuid4().hex}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("report.html", html)
+        for e in entries:
+            zf.write(output_dir / e["output_file"],
+                     arcname=f"images/{e['output_file']}")
+    logger.info(
+        f"Export built: {len(entries)} image(s), {len(failed)} failed/skipped -> {zip_path}"
+    )
+    return zip_path
+
+
+@app.post("/api/export-html")
+async def export_html_report():
+    """Build and download a ZIP containing report.html + processed images."""
+    if last_export_context is None or last_export_context.get("status") != "done":
+        raise HTTPException(
+            status_code=409,
+            detail="No completed processing job. Run processing first, then export.",
+        )
+    try:
+        zip_path = await asyncio.to_thread(_build_export_zip, last_export_context)
+    except Exception as e:
+        logger.error(f"HTML export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"HTML export failed: {e}")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    return FileResponse(
+        str(zip_path),
+        media_type="application/zip",
+        filename=f"report_{stamp}.zip",
+        background=BackgroundTask(lambda: Path(zip_path).unlink(missing_ok=True)),
+    )
 
