@@ -285,7 +285,7 @@ def process_single_image(args_tuple) -> Tuple[bool, str, str]:
                 (..., location_edited: bool, polygon_value: Optional[str])
         
     Returns:
-        Tuple of (success, input_filename, message)
+        Tuple of (success, input_filename, message, output_filename)
     """
     tuple_args = list(args_tuple)
     if len(tuple_args) < 6:
@@ -324,7 +324,7 @@ def process_single_image(args_tuple) -> Tuple[bool, str, str]:
     # Handle file collision
     if output_path.exists():
         if collision_mode == 'skip':
-            return True, input_path.name, "skipped (already exists)"
+            return True, input_path.name, "skipped (already exists)", output_path.name
         elif collision_mode == 'rename':
             output_path = get_unique_output_path(output_path)
             logging.debug(f"Renamed output to: {output_path.name}")
@@ -338,9 +338,9 @@ def process_single_image(args_tuple) -> Tuple[bool, str, str]:
     )
 
     if success:
-        return True, input_path.name, "processed successfully"
+        return True, input_path.name, "processed successfully", output_path.name
     else:
-        return False, input_path.name, "processing failed"
+        return False, input_path.name, "processing failed", output_path.name
 
 
 def _sanitise_filename_fragment(value: str) -> str:
@@ -550,7 +550,7 @@ def main():
             for future in as_completed(futures):
                 filename = futures[future]
                 try:
-                    success, name, message = future.result()
+                    success, name, message, _output_name = future.result()
                     results.append((success, name, message))
                     if success:
                         success_count += 1
