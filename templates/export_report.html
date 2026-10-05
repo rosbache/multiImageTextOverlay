@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image Report{% if project_info %} – {{ project_info }}{% endif %}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  :root { --ink:#1c2430; --muted:#5b6774; --accent:#c96f00; --line:#d8dee6; --bg:#f4f6f8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Segoe UI", Arial, sans-serif; color:var(--ink); background:var(--bg); }
+  header.report-header { background:#fff; border-bottom:2px solid var(--accent); padding:20px 28px; }
+  header.report-header h1 { margin:0 0 8px; font-size:1.4rem; }
+  .meta-grid { display:flex; flex-wrap:wrap; gap:6px 26px; font-size:.85rem; color:var(--muted); }
+  .meta-grid b { color:var(--ink); font-weight:600; }
+  main { padding:20px 28px 40px; max-width:1400px; margin:0 auto; }
+  section { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px 18px; margin-bottom:20px; }
+  h2 { margin:0 0 12px; font-size:1.05rem; }
+  #map { height:480px; border-radius:6px; border:1px solid var(--line); }
+  .table-wrap { max-height:420px; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  table.summary { width:100%; border-collapse:collapse; font-size:.82rem; }
+  table.summary th, table.summary td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.summary th { background:#eef2f6; position:sticky; top:0; }
+  .gallery { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px,1fr)); gap:14px; }
+  figure { margin:0; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#fafbfc; }
+  figure img { width:100%; display:block; }
+  figcaption { padding:6px 9px; font-size:.74rem; color:var(--muted); line-height:1.5; word-break:break-word; }
+  figcaption .fname { color:var(--ink); font-weight:600; display:block; }
+  .failed-list { font-size:.84rem; color:#8a1f1f; margin:0; padding-left:18px; }
+  .note { color:var(--muted); font-size:.8rem; margin:8px 0 0; }
+  .chainage-tooltip { background:rgba(255,255,255,.92) !important; border:1px solid #ff8c00 !important; border-radius:3px !important; color:#b05e00 !important; font-size:.68rem !important; padding:1px 4px !important; white-space:nowrap; }
+  .chainage-tooltip::before { display:none !important; }
+  .polygon-label { background:rgba(255,255,255,.88) !important; color:#7a5b00 !important; border:1px solid rgba(200,144,0,.6) !important; border-radius:4px !important; padding:1px 5px !important; font-size:.7rem !important; font-weight:600 !important; box-shadow:none !important; }
+  .polygon-label::before { display:none !important; }
+  @media print { #map { display:none; } .table-wrap { max-height:none; overflow:visible; } }
+</style>
+</head>
+<body>
+
+<header class="report-header">
+  <h1>Image Report{% if project_info %}: {{ project_info }}{% endif %}</h1>
+  <div class="meta-grid">
+    <span>Created: <b>{{ created }}</b></span>
+    <span>Images: <b>{{ entries | length }}</b>{% if failed %} ({{ failed | length }} failed/skipped){% endif %}</span>
+    <span>Source: <b>{{ source_folder }}</b></span>
+    {% if line %}
+    <span>Reference line: <b>{{ line.total_length_m }} m</b> (EPSG:{{ line.epsg }})</span>
+    {% endif %}
+    {% if polygon_layer %}
+    <span>Polygon layer: <b>{{ polygon_layer.layer }}</b>{% if polygon_layer.field %} · field <b>{{ polygon_layer.field }}</b>{% endif %}</span>
+    {% endif %}
+  </div>
+</header>
+
+<main>
+
+  {% if has_geo %}
+  <section>
+    <h2>Map</h2>
+    <div id="map"></div>
+    <p class="note">Interactive map (basemap: Kartverket) — an internet connection is required to load background tiles. Map coverage is limited to Norway.</p>
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>Summary</h2>
+    <div class="table-wrap">
+      <table class="summary">
+        <thead>
+          <tr><th>File</th><th>Chainage</th><th>Polygon</th><th>Address</th><th>Latitude</th><th>Longitude</th></tr>
+        </thead>
+        <tbody>
+          {% for e in entries %}
+          <tr>
+            <td>{{ e.filename }}</td>
+            <td>{{ e.chainage or "—" }}</td>
+            <td>{{ e.polygon_value or "—" }}</td>
+            <td>{{ e.address or "—" }}</td>
+            <td>{{ "%.6f" | format(e.lat) if e.lat is not none else "—" }}</td>
+            <td>{{ "%.6f" | format(e.lon) if e.lon is not none else "—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Images</h2>
+    <div class="gallery">
+      {% for e in entries %}
+      <figure>
+        <img src="images/{{ e.output_file }}" alt="{{ e.filename }}" loading="lazy">
+        <figcaption>
+          <span class="fname">{{ e.filename }}</span>
+          {% if e.chainage %}{{ e.chainage }}<br>{% endif %}
+          {% if e.polygon_value %}{{ e.polygon_value }}<br>{% endif %}
+          {% if e.address %}{{ e.address }}{% endif %}
+        </figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+  </section>
+
+  {% if failed %}
+  <section>
+    <h2>Failed / not exported</h2>
+    <ul class="failed-list">
+      {% for f in failed %}
+      <li>{{ f.file }} — {{ f.message }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+</main>
+
+{% if has_geo %}
+<script>
+const DATA = {{ report_data | tojson }};
+(function () {
+  const map = L.map('map');
+  L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {
+    attribution: '&copy; <a href="https://www.kartverket.no/">Kartverket</a>', maxNativeZoom: 18, maxZoom: 20
+  }).addTo(map);
+
+  const bounds = L.latLngBounds([]);
+
+  // Image markers
+  (DATA.entries || []).forEach(function (e) {
+    if (e.lat == null || e.lon == null) return;
+    const m = L.marker([e.lat, e.lon]).addTo(map);
+    let tip = e.filename;
+    if (e.chainage) tip += ' · ' + e.chainage;
+    m.bindTooltip(tip);
+    let popup = '<strong>' + e.filename + '</strong>';
+    popup += '<img src="images/' + encodeURIComponent(e.output_file) + '" alt="" style="max-width:240px;max-height:180px;margin:2px 0 4px;border-radius:4px;display:block;">';
+    if (e.chainage) popup += '<br>' + e.chainage;
+    if (e.polygon_value) popup += '<br>' + e.polygon_value;
+    if (e.address) popup += '<br>' + e.address;
+    m.bindPopup(popup);
+    bounds.extend([e.lat, e.lon]);
+  });
+
+  // Reference line + chainage tick markers
+  if (DATA.line && DATA.line.geojson_line) {
+    const coords = DATA.line.geojson_line.geometry.coordinates.map(function (c) {
+      return [c[1], c[0]];
+    });
+    L.polyline(coords, { color: '#ff8c00', weight: 3, opacity: 0.85 }).addTo(map);
+    coords.forEach(function (c) { bounds.extend(c); });
+
+    const markers = DATA.line.markers_geojson;
+    if (markers && markers.features) {
+      markers.features.forEach(function (f) {
+        const lon = f.geometry.coordinates[0];
+        const lat = f.geometry.coordinates[1];
+        const cm = L.circleMarker([lat, lon], {
+          radius: 3, color: '#ff8c00', fillColor: '#ff8c00',
+          fillOpacity: 1.0, weight: 1,
+        }).addTo(map);
+        // Label every ~50 m (matches the app's default label interval)
+        if ((f.properties.chainage_m % 50) < 0.1) {
+          cm.bindTooltip(f.properties.label, {
+            permanent: true, direction: 'right',
+            className: 'chainage-tooltip', offset: [4, 0]
+          });
+        }
+        bounds.extend([lat, lon]);
+      });
+    }
+  }
+
+  // Polygon overlay layer
+  if (DATA.polygon && DATA.polygon.geojson &&
+      DATA.polygon.geojson.features && DATA.polygon.geojson.features.length) {
+    const polyLayer = L.geoJSON(DATA.polygon.geojson, {
+      style: function () {
+        return { color: '#c89000', weight: 2, opacity: 0.9,
+                 fillColor: '#ffc247', fillOpacity: 0.15 };
+      },
+      onEachFeature: function (feature, lyr) {
+        const name = feature && feature.properties && feature.properties.name;
+        if (name) {
+          lyr.bindTooltip(String(name), {
+            permanent: true, direction: 'center', className: 'polygon-label'
+          });
+          lyr.bindPopup('<strong>' + String(name) + '</strong>');
+        }
+      },
+    }).addTo(map);
+    try { bounds.extend(polyLayer.getBounds()); } catch (_) { /* ignore */ }
+  }
+
+  if (bounds.isValid()) {
+    map.fitBounds(bounds, { padding: [30, 30] });
+  } else {
+    map.setView([59.9, 10.75], 6);
+  }
+})();
+</script>
+{% endif %}
+
+</body>
+</html>
