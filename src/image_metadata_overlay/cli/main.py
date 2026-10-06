@@ -17,6 +17,7 @@ from image_metadata_overlay import config as app_config
 from image_metadata_overlay.config import DEFAULT_CONFIG, OverlayConfig
 from image_metadata_overlay.core.overlay import process_image
 from image_metadata_overlay.core.exif import extract_exif_data, reverse_geocode
+from image_metadata_overlay.services.batch import process_single_image
 
 
 # Configure logging
@@ -251,112 +252,6 @@ def build_config(args) -> OverlayConfig:
 
     # File collision mode
     return cfg.with_overrides(file_collision_mode=args.collision)
-
-
-def get_unique_output_path(output_path: Path) -> Path:
-    """
-    Generate a unique output path by adding a counter if file exists.
-    
-    Args:
-        output_path: Desired output path
-        
-    Returns:
-        Unique output path
-    """
-    if not output_path.exists():
-        return output_path
-    
-    stem = output_path.stem
-    suffix = output_path.suffix
-    parent = output_path.parent
-    counter = 1
-    
-    while True:
-        new_path = parent / f"{stem}_{counter}{suffix}"
-        if not new_path.exists():
-            return new_path
-        counter += 1
-
-
-def process_single_image(args_tuple) -> Tuple[bool, str, str]:
-    """
-    Wrapper function for processing a single image (for multiprocessing).
-    
-    Args:
-        args_tuple: Tuple of
-            (input_path, output_dir, collision_mode, config_dict, address, chainage)
-            or with optional trailing entries:
-                (..., location_edited: bool)
-                (..., location_edited: bool, polygon_value: Optional[str])
-        
-    Returns:
-        Tuple of (success, input_filename, message, output_filename)
-    """
-    tuple_args = list(args_tuple)
-    if len(tuple_args) < 6:
-        raise ValueError(f"process_single_image expects at least 6 args, got {len(tuple_args)}")
-
-    input_path, output_dir, collision_mode, overlay_cfg, address, chainage = tuple_args[:6]
-
-    # Optional trailing args
-    location_edited = False
-    polygon_value = None
-    if len(tuple_args) >= 7:
-        seventh = tuple_args[6]
-        if isinstance(seventh, bool):
-            location_edited = seventh
-        else:
-            polygon_value = seventh
-    if len(tuple_args) >= 8:
-        polygon_value = tuple_args[7]
-
-    # overlay_cfg is an immutable OverlayConfig passed from the parent process
-    # (no config-module mutation in workers).
-
-    # Create output path with same filename, optionally appending the polygon field
-    # value (sanitised) to the stem.
-    output_name = input_path.name
-    if polygon_value and overlay_cfg.polygon_append_filename:
-        stem = input_path.stem
-        suffix = input_path.suffix
-        safe = _sanitise_filename_fragment(str(polygon_value))
-        if safe:
-            output_name = f"{stem}_{safe}{suffix}"
-    output_path = output_dir / output_name
-
-    # Handle file collision
-    if output_path.exists():
-        if collision_mode == 'skip':
-            return True, input_path.name, "skipped (already exists)", output_path.name
-        elif collision_mode == 'rename':
-            output_path = get_unique_output_path(output_path)
-            logging.debug(f"Renamed output to: {output_path.name}")
-
-    # Process the image
-    success = process_image(
-        str(input_path), str(output_path),
-        address=address, chainage=chainage,
-        location_edited=location_edited,
-        polygon_value=polygon_value,
-        config=overlay_cfg,
-    )
-
-    if success:
-        return True, input_path.name, "processed successfully", output_path.name
-    else:
-        return False, input_path.name, "processing failed", output_path.name
-
-
-def _sanitise_filename_fragment(value: str) -> str:
-    """Return a filesystem-safe representation of *value* suitable for filename use."""
-    if not value:
-        return ""
-    # Replace invalid path characters with underscore, trim whitespace
-    invalid = '<>:"/\\|?*\r\n\t'
-    cleaned = "".join("_" if ch in invalid else ch for ch in value).strip()
-    cleaned = "_".join(cleaned.split())  # collapse whitespace
-    # Trim length so filenames don't explode
-    return cleaned[:80]
 
 
 def main():
