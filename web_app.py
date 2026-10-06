@@ -86,6 +86,7 @@ class OverlaySettings(BaseModel):
     output_dir: str = ""
     # Overlay text
     project_info: str = ""
+    add_text_overlay: bool = True
     text_position: str = "bottom-left"
     padding: int = 30
     # Font
@@ -137,6 +138,12 @@ class ProcessRequest(BaseModel):
     output_dir: str
     settings: OverlaySettings
     filenames: list[str] = []   # empty = process all
+
+
+class FolderExportRequest(BaseModel):
+    source_folder: str
+    settings: OverlaySettings
+    filenames: list[str] = []   # empty = export all images in the folder
 
 
 class LocationUpdateRequest(BaseModel):
@@ -196,6 +203,7 @@ def _settings_to_config_dict(s: OverlaySettings) -> dict:
         "SHOW_DIRECTION": s.show_direction,
         "DIRECTION_PRECISION": s.direction_precision,
         "PROJECT_INFO": s.project_info or None,
+        "ADD_TEXT_OVERLAY": s.add_text_overlay,
         "SHOW_ADDRESS": s.show_address,
         "GEOCODER_TIMEOUT": s.geocoder_timeout,
         "FILE_COLLISION_MODE": s.file_collision_mode,
@@ -408,6 +416,95 @@ def _build_polygon_value_map(jpg_files: list[Path]) -> dict[str, Optional[str]]:
     return result
 
 
+def _build_address_map(jpg_files: list[Path], show_address: bool,
+                       geocoder_timeout: int) -> dict[str, Optional[str]]:
+    """Resolve an address per image: cache first, on-demand geocode for misses."""
+    address_map: dict[str, Optional[str]] = {}
+    if show_address:
+        from exif_handler import extract_exif_data, reverse_geocode
+        for f in jpg_files:
+            addr = _lookup_address(f)
+            if addr is None:
+                # Cache miss — geocode now so we use the correct coordinates for this image
+                try:
+                    meta = extract_exif_data(str(f), filename=f.stem)
+                    lat = meta.get("_lat_decimal")
+                    lon = meta.get("_lon_decimal")
+                    if lat is not None and lon is not None:
+                        key = (round(lat, 6), round(lon, 6))
+                        if key not in address_cache:
+                            address_cache[key] = reverse_geocode(
+                                lat, lon, timeout=geocoder_timeout
+                            )
+                        addr = address_cache.get(key)
+                except Exception as e:
+                    logger.warning(f"On-demand geocode failed for {f.name}: {e}")
+            address_map[f.name] = addr
+    else:
+        for f in jpg_files:
+            address_map[f.name] = None
+    return address_map
+
+
+def _build_chainage_map(jpg_files: list[Path],
+                        settings: OverlaySettings) -> dict[str, Optional[str]]:
+    """Chainage per image when a reference line is loaded and chainage is enabled."""
+    chainage_map: dict[str, Optional[str]] = {f.name: None for f in jpg_files}
+    if active_line is None or not settings.show_chainage:
+        return chainage_map
+    try:
+        from exif_handler import extract_exif_data
+        cc = _get_chainage_calculator()
+        locs = []
+        for f in jpg_files:
+            fn = f.name
+            if fn in location_overrides:
+                ov = location_overrides[fn]
+                locs.append({"filename": fn, "lat": ov["lat"], "lon": ov["lon"]})
+            else:
+                try:
+                    meta = extract_exif_data(str(f), filename=fn)
+                    locs.append({"filename": fn,
+                                 "lat": meta.get("_lat_decimal"),
+                                 "lon": meta.get("_lon_decimal")})
+                except Exception:
+                    locs.append({"filename": fn, "lat": None, "lon": None})
+        results = cc.batch_calculate_chainages(
+            active_line["line"], locs,
+            precision=settings.chainage_precision,
+            prefix=settings.chainage_prefix,
+            show_offset=settings.show_chainage_offset,
+            start_m=settings.chainage_start_m,
+        )
+        chainage_map = {name: d["formatted"] for name, d in results.items()}
+    except Exception as e:
+        logger.warning(f"Chainage batch calculation failed: {e}")
+    return chainage_map
+
+
+def _snapshot_line() -> Optional[dict]:
+    """Snapshot the active reference line for the export context (or None)."""
+    if active_line is None:
+        return None
+    return {
+        "geojson_line": active_line["geojson_line"],
+        "markers_geojson": active_line["markers_geojson"],
+        "total_length_m": round(active_line["line"].total_length, 1),
+        "epsg": active_line["line"].epsg,
+    }
+
+
+def _snapshot_polygon() -> Optional[dict]:
+    """Snapshot the active polygon layer for the export context (or None)."""
+    if active_polygon_layer is None:
+        return None
+    return {
+        "geojson": active_polygon_layer["geojson"],
+        "layer": active_polygon_layer["layer"],
+        "field": active_polygon_layer["field"],
+    }
+
+
 def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[str] = None,
                            polygon_value: Optional[str] = None) -> bytes:
     """
@@ -527,6 +624,7 @@ async def get_settings():
     """Return current config defaults as JSON."""
     return {
         "project_info": config.PROJECT_INFO or "",
+        "add_text_overlay": getattr(config, "ADD_TEXT_OVERLAY", True),
         "text_position": config.TEXT_POSITION,
         "padding": config.PADDING,
         "font_size": config.FONT_SIZE,
@@ -975,30 +1073,9 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
                     del location_overrides[result['file']]
 
     # Build address map: use cache where available, geocode synchronously for misses
-    address_map: dict[str, Optional[str]] = {}
-    if req.settings.show_address:
-        from exif_handler import extract_exif_data, reverse_geocode
-        for f in jpg_files:
-            addr = _lookup_address(f)
-            if addr is None:
-                # Cache miss — geocode now so we use the correct coordinates for this image
-                try:
-                    meta = extract_exif_data(str(f), filename=f.stem)
-                    lat = meta.get("_lat_decimal")
-                    lon = meta.get("_lon_decimal")
-                    if lat is not None and lon is not None:
-                        key = (round(lat, 6), round(lon, 6))
-                        if key not in address_cache:
-                            address_cache[key] = reverse_geocode(
-                                lat, lon, timeout=req.settings.geocoder_timeout
-                            )
-                        addr = address_cache.get(key)
-                except Exception as e:
-                    logger.warning(f"On-demand geocode failed for {f.name}: {e}")
-            address_map[f.name] = addr
-    else:
-        for f in jpg_files:
-            address_map[f.name] = None
+    address_map = _build_address_map(
+        jpg_files, req.settings.show_address, req.settings.geocoder_timeout
+    )
 
     job_id = uuid.uuid4().hex
     jobs[job_id] = {
@@ -1010,35 +1087,7 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
     }
 
     # Build chainage map if a reference line is loaded and chainage display is enabled
-    chainage_map: dict[str, Optional[str]] = {f.name: None for f in jpg_files}
-    if active_line is not None and req.settings.show_chainage:
-        try:
-            from exif_handler import extract_exif_data
-            cc = _get_chainage_calculator()
-            locs = []
-            for f in jpg_files:
-                fn = f.name
-                if fn in location_overrides:
-                    ov = location_overrides[fn]
-                    locs.append({"filename": fn, "lat": ov["lat"], "lon": ov["lon"]})
-                else:
-                    try:
-                        meta = extract_exif_data(str(f), filename=fn)
-                        locs.append({"filename": fn,
-                                     "lat": meta.get("_lat_decimal"),
-                                     "lon": meta.get("_lon_decimal")})
-                    except Exception:
-                        locs.append({"filename": fn, "lat": None, "lon": None})
-            results = cc.batch_calculate_chainages(
-                active_line["line"], locs,
-                precision=req.settings.chainage_precision,
-                prefix=req.settings.chainage_prefix,
-                show_offset=req.settings.show_chainage_offset,
-                start_m=req.settings.chainage_start_m,
-            )
-            chainage_map = {name: d["formatted"] for name, d in results.items()}
-        except Exception as e:
-            logger.warning(f"Chainage batch calculation failed: {e}")
+    chainage_map = _build_chainage_map(jpg_files, req.settings)
 
     # Build polygon-value map if a polygon layer is active
     polygon_map: dict[str, Optional[str]] = _build_polygon_value_map(jpg_files)
@@ -1056,23 +1105,8 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
         "chainage_map": dict(chainage_map),
         "polygon_map": dict(polygon_map),
         "edited_map": dict(edited_map),
-        "line": (
-            {
-                "geojson_line": active_line["geojson_line"],
-                "markers_geojson": active_line["markers_geojson"],
-                "total_length_m": round(active_line["line"].total_length, 1),
-                "epsg": active_line["line"].epsg,
-            }
-            if active_line is not None else None
-        ),
-        "polygon_layer": (
-            {
-                "geojson": active_polygon_layer["geojson"],
-                "layer": active_polygon_layer["layer"],
-                "field": active_polygon_layer["field"],
-            }
-            if active_polygon_layer is not None else None
-        ),
+        "line": _snapshot_line(),
+        "polygon_layer": _snapshot_polygon(),
         "status": "running",
         "results": [],
     }
@@ -1461,13 +1495,18 @@ def _build_export_zip(ctx: dict) -> Path:
             failed.append({"file": fname, "success": False,
                            "message": f"output file not found: {out_name}"})
             continue
-        lat = lon = None
-        try:
-            meta = extract_exif_data(str(out_path), filename=fname)
-            lat = meta.get("_lat_decimal")
-            lon = meta.get("_lon_decimal")
-        except Exception as e:
-            logger.warning(f"Could not read EXIF from {out_name} for export: {e}")
+        loc = (ctx.get("location_map") or {}).get(fname)
+        if loc is not None:
+            # Staged location override — source EXIF intentionally left untouched
+            lat, lon = loc
+        else:
+            lat = lon = None
+            try:
+                meta = extract_exif_data(str(out_path), filename=fname)
+                lat = meta.get("_lat_decimal")
+                lon = meta.get("_lon_decimal")
+            except Exception as e:
+                logger.warning(f"Could not read EXIF from {out_name} for export: {e}")
         entries.append({
             "filename": fname,
             "output_file": out_name,
@@ -1533,6 +1572,66 @@ async def export_html_report():
         zip_path = await asyncio.to_thread(_build_export_zip, last_export_context)
     except Exception as e:
         logger.error(f"HTML export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"HTML export failed: {e}")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    return FileResponse(
+        str(zip_path),
+        media_type="application/zip",
+        filename=f"report_{stamp}.zip",
+        background=BackgroundTask(lambda: Path(zip_path).unlink(missing_ok=True)),
+    )
+
+
+@app.post("/api/export-html-from-folder")
+async def export_html_from_folder(req: FolderExportRequest):
+    """Build a report ZIP straight from a folder of (already processed) images.
+
+    Images are bundled as-is and never modified: staged location overrides are
+    reflected in the report map via location_map, source EXIF is left untouched.
+    """
+    source_folder = Path(req.source_folder)
+    if not source_folder.exists():
+        raise HTTPException(status_code=400, detail="Source folder does not exist")
+
+    jpg_files = _get_jpg_files(str(source_folder))
+    if not jpg_files:
+        raise HTTPException(status_code=400, detail="No JPG images found in source folder")
+
+    if req.filenames:
+        name_set = set(req.filenames)
+        jpg_files = [f for f in jpg_files if f.name in name_set]
+        if not jpg_files:
+            raise HTTPException(status_code=400, detail="None of the specified files were found")
+
+    ctx = {
+        "job_id": None,
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "source_folder": str(source_folder),
+        "output_dir": str(source_folder),  # images are bundled as-is
+        "settings": _settings_to_config_dict(req.settings),
+        "filenames": [f.name for f in jpg_files],
+        "address_map": _build_address_map(
+            jpg_files, req.settings.show_address, req.settings.geocoder_timeout
+        ),
+        "chainage_map": _build_chainage_map(jpg_files, req.settings),
+        "polygon_map": _build_polygon_value_map(jpg_files),
+        "edited_map": {f.name: f.name in location_overrides for f in jpg_files},
+        "location_map": {
+            f.name: (location_overrides[f.name]["lat"], location_overrides[f.name]["lon"])
+            for f in jpg_files if f.name in location_overrides
+        },
+        "line": _snapshot_line(),
+        "polygon_layer": _snapshot_polygon(),
+        "status": "done",
+        "results": [
+            {"file": f.name, "success": True, "message": "", "output_file": f.name}
+            for f in jpg_files
+        ],
+    }
+    try:
+        zip_path = await asyncio.to_thread(_build_export_zip, ctx)
+    except Exception as e:
+        logger.error(f"Folder HTML export failed: {e}")
         raise HTTPException(status_code=500, detail=f"HTML export failed: {e}")
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     return FileResponse(
