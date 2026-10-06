@@ -9,11 +9,12 @@ from pathlib import Path
 import logging
 import shutil
 import piexif
-import config
-from exif_handler import extract_exif_data
+from image_metadata_overlay.config import DEFAULT_CONFIG, OverlayConfig
+from image_metadata_overlay.core.exif import extract_exif_data
+from image_metadata_overlay.paths import resolve_font
 
 
-def create_overlay_text(metadata: dict) -> str:
+def create_overlay_text(metadata: dict, config: OverlayConfig = DEFAULT_CONFIG) -> str:
     """
     Create formatted text string from metadata.
     
@@ -31,10 +32,10 @@ def create_overlay_text(metadata: dict) -> str:
         lines.append(metadata['project_info'])
         # If the polygon field value should live with project info, place it
         # right below the project info before the blank separator line.
-        if metadata.get('polygon_value') and config.POLYGON_APPEND_PROJECT_INFO:
+        if metadata.get('polygon_value') and config.polygon_append_project_info:
             lines.append(metadata['polygon_value'])
         lines.append('')  # Add blank line separator
-    elif metadata.get('polygon_value') and config.POLYGON_APPEND_PROJECT_INFO:
+    elif metadata.get('polygon_value') and config.polygon_append_project_info:
         # No project info configured, but the user still wants the polygon
         # value shown as its own top-of-overlay line.
         lines.append(metadata['polygon_value'])
@@ -61,7 +62,7 @@ def create_overlay_text(metadata: dict) -> str:
         lines.append(f"Height: {metadata['altitude']:.1f} m")
 
     # Add address if available
-    if config.SHOW_ADDRESS and metadata.get('address'):
+    if config.show_address and metadata.get('address'):
         lines.append(f"Address: {metadata['address']}")
 
     # Add direction if available or show N/A
@@ -93,7 +94,7 @@ def create_overlay_text(metadata: dict) -> str:
     return '\n'.join(lines) if lines else "No metadata available"
 
 
-def load_font_with_fallback() -> ImageFont.FreeTypeFont:
+def load_font_with_fallback(config: OverlayConfig = DEFAULT_CONFIG) -> ImageFont.FreeTypeFont:
     """
     Load font with fallback to bundled default font.
     
@@ -101,11 +102,12 @@ def load_font_with_fallback() -> ImageFont.FreeTypeFont:
         Loaded font object
     """
     try:
-        font = ImageFont.truetype(config.FONT_PATH, config.FONT_SIZE)
-        logging.debug(f"Loaded font: {config.FONT_PATH} at size {config.FONT_SIZE}")
+        font_path = resolve_font(config.font_path)
+        font = ImageFont.truetype(font_path, config.font_size)
+        logging.debug(f"Loaded font: {font_path} at size {config.font_size}")
         return font
     except (OSError, IOError) as e:
-        logging.warning(f"Could not load font from {config.FONT_PATH}: {e}")
+        logging.warning(f"Could not load font from {config.font_path}: {e}")
         logging.warning("Attempting to use default font")
         try:
             # Try to load a system font as fallback
@@ -118,7 +120,7 @@ def load_font_with_fallback() -> ImageFont.FreeTypeFont:
             ]
             for fallback in fallback_fonts:
                 try:
-                    font = ImageFont.truetype(fallback, config.FONT_SIZE)
+                    font = ImageFont.truetype(fallback, config.font_size)
                     logging.info(f"Using fallback font: {fallback}")
                     return font
                 except (OSError, IOError):
@@ -132,7 +134,7 @@ def load_font_with_fallback() -> ImageFont.FreeTypeFont:
             return ImageFont.load_default()
 
 
-def process_image(input_path: str, output_path: str, address: str = None, chainage: str = None, location_edited: bool = False, polygon_value: str = None) -> bool:
+def process_image(input_path: str, output_path: str, address: str = None, chainage: str = None, location_edited: bool = False, polygon_value: str = None, config: OverlayConfig = DEFAULT_CONFIG) -> bool:
     """
     Process a single image by adding metadata overlay.
     
@@ -149,7 +151,7 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
     """
     try:
         # No-text mode: lossless copy — pixels and EXIF stay byte-identical
-        if not getattr(config, "ADD_TEXT_OVERLAY", True):
+        if not config.add_text_overlay:
             if Path(input_path).resolve() == Path(output_path).resolve():
                 logging.info(f"Overlay disabled and output equals input, nothing to do: {input_path}")
                 return True
@@ -168,14 +170,14 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
             metadata['address'] = address
 
         # Add project info if configured
-        if config.PROJECT_INFO:
-            metadata['project_info'] = config.PROJECT_INFO
+        if config.project_info:
+            metadata['project_info'] = config.project_info
         
         # Add direction display flag
-        metadata['show_direction'] = config.SHOW_DIRECTION
+        metadata['show_direction'] = config.show_direction
 
         # Add chainage if available
-        metadata['show_chainage'] = config.SHOW_CHAINAGE
+        metadata['show_chainage'] = config.show_chainage
         if chainage is not None:
             metadata['chainage'] = chainage
 
@@ -185,11 +187,11 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
             metadata['polygon_value'] = polygon_value
         
         # Convert direction to cardinal if available and enabled
-        if config.SHOW_DIRECTION and metadata.get('direction') is not None:
-            from exif_handler import degrees_to_cardinal
+        if config.show_direction and metadata.get('direction') is not None:
+            from image_metadata_overlay.core.exif import degrees_to_cardinal
             metadata['direction_cardinal'] = degrees_to_cardinal(
                 metadata['direction'], 
-                config.DIRECTION_PRECISION
+                config.direction_precision
             )
         
         # Open and verify image
@@ -232,15 +234,15 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
         
         # Calculate text position based on configuration
         position_map = {
-            'top-left': (config.PADDING, config.PADDING),
-            'top-right': (image.width - text_width - config.PADDING, config.PADDING),
-            'bottom-left': (config.PADDING, image.height - text_height - config.PADDING),
-            'bottom-right': (image.width - text_width - config.PADDING, 
-                           image.height - text_height - config.PADDING)
+            'top-left': (config.padding, config.padding),
+            'top-right': (image.width - text_width - config.padding, config.padding),
+            'bottom-left': (config.padding, image.height - text_height - config.padding),
+            'bottom-right': (image.width - text_width - config.padding,
+                           image.height - text_height - config.padding)
         }
-        
-        position = position_map.get(config.TEXT_POSITION, 
-                                    (config.PADDING, image.height - text_height - config.PADDING))
+
+        position = position_map.get(config.text_position,
+                                    (config.padding, image.height - text_height - config.padding))
         
         # Draw text with outline using modern Pillow API
         # This replaces the old nested loop approach with native stroke support
@@ -248,14 +250,14 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
             position, 
             overlay_text, 
             font=font, 
-            fill=config.TEXT_COLOR,
-            stroke_width=config.OUTLINE_WIDTH,
-            stroke_fill=config.OUTLINE_COLOR
+            fill=config.text_color,
+            stroke_width=config.outline_width,
+            stroke_fill=config.outline_color
         )
         
         # Save processed image with original EXIF preserved
         save_kwargs = {
-            'quality': config.OUTPUT_QUALITY,
+            'quality': config.output_quality,
             'optimize': True
         }
         

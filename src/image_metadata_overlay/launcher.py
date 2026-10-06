@@ -36,17 +36,17 @@ def _configure_native_dlls():
 
 def _patch_paths():
     """
-    Point config defaults at the bundle's bundled directories so that
+    Point config defaults at real directories so that
     the app works out-of-the-box without any manual configuration.
     """
-    import config
-    # Only override if the paths don't already point somewhere real
+    from image_metadata_overlay import config
+    # Only override if the paths don't already point somewhere real.
+    # (The font needs no patching: overlay rendering resolves relative font
+    # paths against the bundled assets directory via paths.resolve_font.)
     if not os.path.isdir(config.INPUT_DIR):
         config.INPUT_DIR = _resource_path("input")
     if not os.path.isdir(config.OUTPUT_DIR):
         config.OUTPUT_DIR = _resource_path("output")
-    if not os.path.isfile(config.FONT_PATH):
-        config.FONT_PATH = _resource_path(os.path.join("fonts", "arial.ttf"))
 
 
 HOST = "127.0.0.1"
@@ -66,9 +66,10 @@ if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
 
-    # Add the bundle root to sys.path so all local modules are importable
-    bundle_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    if bundle_dir not in sys.path:
+    # Add the bundle root to sys.path when frozen so all bundled modules
+    # are importable (a no-op in dev, where the package is installed).
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir and bundle_dir not in sys.path:
         sys.path.insert(0, bundle_dir)
 
     _configure_native_dlls()
@@ -79,7 +80,7 @@ if __name__ == "__main__":
 
     import uvicorn
     uvicorn.run(
-        "web_app:app",
+        "image_metadata_overlay.web.app:app",
         host=HOST,
         port=PORT,
         log_config=None,   # disable uvicorn's colored formatter (crashes without a console)

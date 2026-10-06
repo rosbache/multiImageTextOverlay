@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from image_metadata_overlay.paths import resource_path
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -149,10 +151,10 @@ class SosiFile:
 def load_koordsys_map(jsonc_path: Optional[str] = None) -> Dict:
     """Load the KOORDSYS → EPSG lookup from a JSONC file.
 
-    Falls back to ``sosi_koordsys.jsonc`` next to this module.
+    Falls back to the bundled ``assets/data/sosi_koordsys.jsonc``.
     """
     if jsonc_path is None:
-        jsonc_path = os.path.join(os.path.dirname(__file__), "sosi_koordsys.jsonc")
+        jsonc_path = str(resource_path("data", "sosi_koordsys.jsonc"))
     with open(jsonc_path, "r", encoding="utf-8") as fh:
         text = fh.read()
     # Strip JSONC comments (reuse same approach as config_utils)

@@ -107,7 +107,7 @@ def list_sosi_kurves(sosi_file: str) -> List[dict]:
 
         {id, object_type, objtype, coord_count, length_m}
     """
-    from sosi_parser import parse_sosi_file
+    from image_metadata_overlay.geo.sosi import parse_sosi_file
 
     result = parse_sosi_file(sosi_file)
     enhet = result.header.enhet
@@ -154,7 +154,7 @@ def load_sosi_line(
         When *True* the coordinate sequence is reversed so chainage increases
         in the opposite direction.
     """
-    from sosi_parser import parse_sosi_file
+    from image_metadata_overlay.geo.sosi import parse_sosi_file
 
     result = parse_sosi_file(sosi_file)
     header = result.header

@@ -594,6 +594,10 @@
       <details open>
         <summary>Overlay Text</summary>
         <div class="settings-body">
+          <label class="check-row">
+            <input type="checkbox" id="s-add-text" checked />
+            Add text overlay to images
+          </label>
           <label>Project info
             <input type="text" id="s-project-info" placeholder="e.g. My Survey 2024" />
           </label>
@@ -970,6 +974,7 @@ let state = {
   lastSelectionAnchor: null,
   jobId: null,
   sseSource: null,
+  hasCompletedJob: false,  // a processing job finished for the current image set
 };
 
 let previewDebounceTimer = null;
@@ -998,6 +1003,7 @@ function clearStatus() {
 // ── Apply plain (non-file-backed) settings fields to the form ──
 function applyBasicSettingsToForm(d) {
   document.getElementById('s-project-info').value = d.project_info || '';
+  document.getElementById('s-add-text').checked = d.add_text_overlay !== false;
   document.getElementById('s-text-position').value = d.text_position;
   document.getElementById('s-padding').value = d.padding;
   document.getElementById('s-font-size').value = d.font_size;
@@ -1072,6 +1078,7 @@ function gatherSettings() {
   const [or, og, ob] = hex2rgb(document.getElementById('s-outline-color').value);
   return {
     project_info: document.getElementById('s-project-info').value,
+    add_text_overlay: document.getElementById('s-add-text').checked,
     text_position: document.getElementById('s-text-position').value,
     padding: parseInt(document.getElementById('s-padding').value) || 30,
     font_size: parseInt(document.getElementById('s-font-size').value) || 128,
@@ -1361,9 +1368,12 @@ function populateImageList(images, sourceFolder, summary) {
   updatePreviewToolbar();
   updateGeoSummary();
 
+  state.hasCompletedJob = false;  // new image set invalidates any previous job export
+
   if (images.length === 0) {
     list.innerHTML = '<p class="no-images">No JPG images found.</p>';
     document.getElementById('btn-process').disabled = true;
+    document.getElementById('btn-export-report').disabled = true;
     return;
   }
 
@@ -1380,6 +1390,7 @@ function populateImageList(images, sourceFolder, summary) {
   }
 
   document.getElementById('btn-process').disabled = false;
+  document.getElementById('btn-export-report').disabled = false;
 }
 
 function handleItemClick(name, el, e) {
@@ -1821,7 +1832,22 @@ document.getElementById('btn-export-report').addEventListener('click', async () 
   btn.disabled = true;
   setStatus('Building HTML report…', 'info');
   try {
-    const res = await fetch('/api/export-html', { method: 'POST' });
+    let res;
+    if (state.hasCompletedJob) {
+      // A processing job finished for this image set: report on the processed outputs
+      res = await fetch('/api/export-html', { method: 'POST' });
+    } else {
+      // Export the loaded folder as-is (e.g. already-processed images)
+      res = await fetch('/api/export-html-from-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_folder: state.sourceFolder,
+          settings: gatherSettings(),
+          filenames: [...state.selectedSet],
+        }),
+      });
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       setStatus(err.detail || 'Export failed', 'err');
@@ -1875,6 +1901,7 @@ function startProgressStream(jobId, total) {
       }
       document.getElementById('btn-process').disabled = false;
       document.getElementById('btn-process-selected').disabled = state.selectedSet.size === 0;
+      state.hasCompletedJob = true;
       document.getElementById('btn-export-report').disabled = false;
     } else if (d.current_file) {
       setStatus(`Processing: ${d.current_file}`, 'info');

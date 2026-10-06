@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image-metadata-overlay"
+version = "1.0.0"
+description = "Batch-add GPS/EXIF metadata overlays to images, with SOSI chainage and GeoPackage polygon support"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow>=10.0.0",
+    "piexif>=1.1.3",
+    "tqdm>=4.65.0",
+    "pyproj>=3.6.0",
+    "geopy>=2.4.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "python-multipart>=0.0.9",
+    "jinja2>=3.1.0",
+    "geopandas>=1.0.0",
+    "pyogrio>=0.9.0",
+]
+
+[project.scripts]
+image-overlay = "image_metadata_overlay.cli.main:main"
+image-overlay-web = "image_metadata_overlay.web.app:run"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"image_metadata_overlay" = [
+    "assets/templates/*",
+    "assets/fonts/*",
+    "assets/data/*",
+]

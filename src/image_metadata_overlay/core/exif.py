@@ -9,7 +9,7 @@ import piexif
 import logging
 from typing import Optional, Tuple, Dict
 from pyproj import Transformer
-import config
+from image_metadata_overlay.config import DEFAULT_CONFIG, OverlayConfig
 
 # Cache for coordinate transformers (one per process)
 _transformer_cache: Dict[int, Transformer] = {}
@@ -276,7 +276,7 @@ def format_utm_coordinates(easting: float, northing: float, zone: int, hemispher
     return f"UTM {zone}{hemisphere}: {easting:.2f}E, {northing:.2f}N"
 
 
-def extract_exif_data(image_path: str, filename: str = None) -> dict:
+def extract_exif_data(image_path: str, filename: str = None, config: OverlayConfig = DEFAULT_CONFIG) -> dict:
     """
     Extract EXIF metadata from a JPG image.
     
@@ -403,13 +403,13 @@ def extract_exif_data(image_path: str, filename: str = None) -> dict:
                             logging.debug(f"Could not parse direction from {image_path}: {e}")
                     
                     # Transform to UTM if enabled
-                    if config.SHOW_UTM_COORDINATES:
+                    if config.show_utm_coordinates:
                         try:
                             easting, northing = transform_to_utm(
-                                lat_decimal, lon_decimal, config.TARGET_EPSG
+                                lat_decimal, lon_decimal, config.target_epsg
                             )
                             result['location_utm'] = format_utm_coordinates(
-                                easting, northing, config.UTM_ZONE, config.UTM_HEMISPHERE
+                                easting, northing, config.utm_zone, config.utm_hemisphere
                             )
                         except Exception as e:
                             logging.warning(f"Failed to transform coordinates for {image_path}: {e}")

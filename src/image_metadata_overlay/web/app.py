@@ -1,7 +1,7 @@
 """
 FastAPI Web Interface for Image Metadata Overlay
 
-Starts with: uvicorn web_app:app --host 127.0.0.1 --port 8000
+Starts with: uvicorn image_metadata_overlay.web.app:app --host 127.0.0.1 --port 8000
 Then open:   http://localhost:8000
 """
 
@@ -23,16 +23,18 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from pydantic import BaseModel, validator
 from starlette.background import BackgroundTask
 
-import config
+from image_metadata_overlay import config
+from image_metadata_overlay.config import DEFAULT_CONFIG, OverlayConfig
+from image_metadata_overlay.paths import assets_dir, resource_path
 
 # ---------------------------------------------------------------------------
 # Lazy import helper for chainage module
 # ---------------------------------------------------------------------------
 
 def _get_chainage_calculator():
-    """Lazy import of chainage_calculator to avoid hard dependency at startup."""
-    import chainage_calculator
-    return chainage_calculator
+    """Lazy import of the chainage module to keep server startup fast."""
+    from image_metadata_overlay.geo import chainage
+    return chainage
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -41,8 +43,7 @@ def _get_chainage_calculator():
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).parent
-TEMPLATES_DIR = BASE_DIR / "templates"
+TEMPLATES_DIR = resource_path("templates")
 INDEX_HTML = TEMPLATES_DIR / "index.html"
 TEMP_UPLOAD_DIR = Path(tempfile.gettempdir()) / "multiImageOverlay_uploads"
 TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -185,43 +186,37 @@ class SelectPolygonLayerRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _settings_to_config_dict(s: OverlaySettings) -> dict:
-    """Convert OverlaySettings to the config_dict format expected by workers."""
-    return {
-        "TEXT_POSITION": s.text_position,
-        "TEXT_COLOR": (s.text_color_r, s.text_color_g, s.text_color_b),
-        "OUTLINE_COLOR": (s.outline_color_r, s.outline_color_g, s.outline_color_b),
-        "OUTLINE_WIDTH": s.outline_width,
-        "FONT_SIZE": s.font_size,
-        "FONT_PATH": s.font_path,
-        "PADDING": s.padding,
-        "OUTPUT_QUALITY": s.output_quality,
-        "TARGET_EPSG": s.target_epsg,
-        "UTM_ZONE": s.utm_zone,
-        "UTM_HEMISPHERE": s.utm_hemisphere,
-        "SHOW_UTM_COORDINATES": s.show_utm,
-        "SHOW_DIRECTION": s.show_direction,
-        "DIRECTION_PRECISION": s.direction_precision,
-        "PROJECT_INFO": s.project_info or None,
-        "ADD_TEXT_OVERLAY": s.add_text_overlay,
-        "SHOW_ADDRESS": s.show_address,
-        "GEOCODER_TIMEOUT": s.geocoder_timeout,
-        "FILE_COLLISION_MODE": s.file_collision_mode,
-        "MAX_WORKERS": s.max_workers,
-        "SHOW_CHAINAGE": s.show_chainage,
-        "CHAINAGE_PREFIX": s.chainage_prefix,
-        "CHAINAGE_PRECISION": s.chainage_precision,
-        "SHOW_CHAINAGE_OFFSET": s.show_chainage_offset,
-        "CHAINAGE_START_M": s.chainage_start_m,
-        "POLYGON_APPEND_PROJECT_INFO": s.polygon_append_project_info,
-        "POLYGON_APPEND_FILENAME": s.polygon_append_filename,
-    }
-
-
-def _apply_config_dict(cfg: dict):
-    """Apply a config_dict to the config module in the current process."""
-    for key, value in cfg.items():
-        setattr(config, key, value)
+def _settings_to_config(s: OverlaySettings) -> OverlayConfig:
+    """Convert OverlaySettings to an immutable OverlayConfig for workers."""
+    return OverlayConfig(
+        text_position=s.text_position,
+        text_color=(s.text_color_r, s.text_color_g, s.text_color_b),
+        outline_color=(s.outline_color_r, s.outline_color_g, s.outline_color_b),
+        outline_width=s.outline_width,
+        font_size=s.font_size,
+        font_path=s.font_path,
+        padding=s.padding,
+        output_quality=s.output_quality,
+        target_epsg=s.target_epsg,
+        utm_zone=s.utm_zone,
+        utm_hemisphere=s.utm_hemisphere,
+        show_utm_coordinates=s.show_utm,
+        show_direction=s.show_direction,
+        direction_precision=s.direction_precision,
+        project_info=s.project_info or None,
+        add_text_overlay=s.add_text_overlay,
+        show_address=s.show_address,
+        geocoder_timeout=s.geocoder_timeout,
+        file_collision_mode=s.file_collision_mode,
+        max_workers=s.max_workers,
+        show_chainage=s.show_chainage,
+        chainage_prefix=s.chainage_prefix,
+        chainage_precision=s.chainage_precision,
+        show_chainage_offset=s.show_chainage_offset,
+        chainage_start_m=s.chainage_start_m,
+        polygon_append_project_info=s.polygon_append_project_info,
+        polygon_append_filename=s.polygon_append_filename,
+    )
 
 
 def _get_jpg_files(folder: str) -> list[Path]:
@@ -243,7 +238,7 @@ def _build_image_summary(jpg_files: list[Path]) -> dict[str, Any]:
 
 async def _geocode_images(jpg_files: list[Path], timeout: int):
     """Pre-geocode GPS coordinates for a list of images (runs in thread pool)."""
-    from exif_handler import extract_exif_data, reverse_geocode
+    from image_metadata_overlay.core.exif import extract_exif_data, reverse_geocode
 
     # State is pre-set by the calling endpoint; ensure consistency
     reversegeocodeProgress["running"] = True
@@ -273,8 +268,8 @@ async def _geocode_images(jpg_files: list[Path], timeout: int):
 
 def _lookup_address(image_path: Path) -> Optional[str]:
     """Look up cached address for an image, checking overrides first."""
-    from exif_handler import extract_exif_data
-    
+    from image_metadata_overlay.core.exif import extract_exif_data
+
     filename = image_path.name
     
     # Check for staged override first
@@ -399,7 +394,7 @@ def _build_polygon_value_map(jpg_files: list[Path]) -> dict[str, Optional[str]]:
     result: dict[str, Optional[str]] = {}
     if active_polygon_layer is None:
         return {f.name: None for f in jpg_files}
-    from exif_handler import extract_exif_data
+    from image_metadata_overlay.core.exif import extract_exif_data
     for f in jpg_files:
         fn = f.name
         if fn in location_overrides:
@@ -421,7 +416,7 @@ def _build_address_map(jpg_files: list[Path], show_address: bool,
     """Resolve an address per image: cache first, on-demand geocode for misses."""
     address_map: dict[str, Optional[str]] = {}
     if show_address:
-        from exif_handler import extract_exif_data, reverse_geocode
+        from image_metadata_overlay.core.exif import extract_exif_data, reverse_geocode
         for f in jpg_files:
             addr = _lookup_address(f)
             if addr is None:
@@ -453,7 +448,7 @@ def _build_chainage_map(jpg_files: list[Path],
     if active_line is None or not settings.show_chainage:
         return chainage_map
     try:
-        from exif_handler import extract_exif_data
+        from image_metadata_overlay.core.exif import extract_exif_data
         cc = _get_chainage_calculator()
         locs = []
         for f in jpg_files:
@@ -505,20 +500,17 @@ def _snapshot_polygon() -> Optional[dict]:
     }
 
 
-def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[str] = None,
+def _generate_preview_sync(input_path: str, cfg: OverlayConfig, chainage: Optional[str] = None,
                            polygon_value: Optional[str] = None) -> bytes:
     """
     Run process_image in-process (called via asyncio.to_thread).
-    Returns PNG bytes of the processed image scaled to max 1200px wide.
+    Returns JPEG bytes of the processed image scaled to max 1200px wide.
     """
-    import config as cfg
-    from image_processor import process_image
+    from image_metadata_overlay.core.overlay import process_image
     from PIL import Image
-    from exif_handler import write_gps_to_exif
+    from image_metadata_overlay.core.exif import write_gps_to_exif
     import shutil
 
-    _apply_config_dict(cfg_dict)
-    
     # Check if we need to apply a staged override
     filename = Path(input_path).name
     needs_temp_copy = filename in location_overrides
@@ -540,7 +532,7 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[s
 
     out_path = Path(tempfile.gettempdir()) / f"preview_{uuid.uuid4().hex}.jpg"
     try:
-        success = process_image(working_path, str(out_path), address=address, chainage=chainage, location_edited=needs_temp_copy, polygon_value=polygon_value)
+        success = process_image(working_path, str(out_path), address=address, chainage=chainage, location_edited=needs_temp_copy, polygon_value=polygon_value, config=cfg)
         if not success:
             raise RuntimeError("process_image returned False")
 
@@ -561,7 +553,7 @@ def _generate_preview_sync(input_path: str, cfg_dict: dict, chainage: Optional[s
 
 
 def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
-                   cfg_dict: dict, collision_mode: str, max_workers: int,
+                   cfg: OverlayConfig, collision_mode: str, max_workers: int,
                    address_map: dict, chainage_map: dict, edited_map: dict = None,
                    polygon_map: dict = None):
     """
@@ -569,7 +561,7 @@ def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
     Calls process_single_image workers via ProcessPoolExecutor.
     """
     global last_export_context
-    from main import process_single_image
+    from image_metadata_overlay.cli.main import process_single_image
 
     jobs[job_id]["status"] = "running"
     jobs[job_id]["total"] = len(jpg_files)
@@ -578,7 +570,7 @@ def _run_batch_job(job_id: str, jpg_files: list[Path], output_dir: Path,
     _polygon_map = polygon_map or {}
     process_args = [
         (
-            jpg, output_dir, collision_mode, cfg_dict,
+            jpg, output_dir, collision_mode, cfg,
             address_map.get(jpg.name), chainage_map.get(jpg.name),
             _edited_map.get(jpg.name, False),
             _polygon_map.get(jpg.name),
@@ -622,50 +614,52 @@ async def index():
 @app.get("/api/settings")
 async def get_settings():
     """Return current config defaults as JSON."""
+    d = DEFAULT_CONFIG
     return {
-        "project_info": config.PROJECT_INFO or "",
-        "add_text_overlay": getattr(config, "ADD_TEXT_OVERLAY", True),
-        "text_position": config.TEXT_POSITION,
-        "padding": config.PADDING,
-        "font_size": config.FONT_SIZE,
-        "font_path": config.FONT_PATH,
-        "text_color_r": config.TEXT_COLOR[0],
-        "text_color_g": config.TEXT_COLOR[1],
-        "text_color_b": config.TEXT_COLOR[2],
-        "outline_color_r": config.OUTLINE_COLOR[0],
-        "outline_color_g": config.OUTLINE_COLOR[1],
-        "outline_color_b": config.OUTLINE_COLOR[2],
-        "outline_width": config.OUTLINE_WIDTH,
-        "show_utm": config.SHOW_UTM_COORDINATES,
-        "target_epsg": config.TARGET_EPSG,
-        "utm_zone": config.UTM_ZONE,
-        "utm_hemisphere": config.UTM_HEMISPHERE,
-        "show_direction": config.SHOW_DIRECTION,
-        "direction_precision": config.DIRECTION_PRECISION,
-        "show_address": config.SHOW_ADDRESS,
-        "geocoder_timeout": config.GEOCODER_TIMEOUT,
-        "output_quality": config.OUTPUT_QUALITY,
-        "file_collision_mode": config.FILE_COLLISION_MODE,
-        "max_workers": config.MAX_WORKERS,
+        "project_info": d.project_info or "",
+        "add_text_overlay": d.add_text_overlay,
+        "text_position": d.text_position,
+        "padding": d.padding,
+        "font_size": d.font_size,
+        "font_path": d.font_path,
+        "text_color_r": d.text_color[0],
+        "text_color_g": d.text_color[1],
+        "text_color_b": d.text_color[2],
+        "outline_color_r": d.outline_color[0],
+        "outline_color_g": d.outline_color[1],
+        "outline_color_b": d.outline_color[2],
+        "outline_width": d.outline_width,
+        "show_utm": d.show_utm_coordinates,
+        "target_epsg": d.target_epsg,
+        "utm_zone": d.utm_zone,
+        "utm_hemisphere": d.utm_hemisphere,
+        "show_direction": d.show_direction,
+        "direction_precision": d.direction_precision,
+        "show_address": d.show_address,
+        "geocoder_timeout": d.geocoder_timeout,
+        "output_quality": d.output_quality,
+        "file_collision_mode": d.file_collision_mode,
+        "max_workers": d.max_workers,
         "input_dir": config.INPUT_DIR,
         "output_dir": config.OUTPUT_DIR,
-        "show_chainage": config.SHOW_CHAINAGE,
-        "chainage_prefix": config.CHAINAGE_PREFIX,
-        "chainage_precision": config.CHAINAGE_PRECISION,
-        "show_chainage_offset": config.SHOW_CHAINAGE_OFFSET,
-        "chainage_start_m": getattr(config, "CHAINAGE_START_M", 0.0),
-        "polygon_append_project_info": getattr(config, "POLYGON_APPEND_PROJECT_INFO", False),
-        "polygon_append_filename": getattr(config, "POLYGON_APPEND_FILENAME", False),
+        "show_chainage": d.show_chainage,
+        "chainage_prefix": d.chainage_prefix,
+        "chainage_precision": d.chainage_precision,
+        "show_chainage_offset": d.show_chainage_offset,
+        "chainage_start_m": d.chainage_start_m,
+        "polygon_append_project_info": d.polygon_append_project_info,
+        "polygon_append_filename": d.polygon_append_filename,
     }
 
 
 @app.get("/api/fonts")
 async def list_fonts():
-    """List available .ttf font files in the fonts/ directory."""
-    fonts_dir = BASE_DIR / "fonts"
+    """List available .ttf font files in the bundled fonts asset directory."""
+    base = assets_dir()
+    fonts_dir = base / "fonts"
     if not fonts_dir.exists():
         return {"fonts": []}
-    fonts = [str(f.relative_to(BASE_DIR)).replace("\\", "/")
+    fonts = [str(f.relative_to(base)).replace("\\", "/")
              for f in fonts_dir.rglob("*.ttf")]
     return {"fonts": fonts}
 
@@ -688,7 +682,7 @@ async def load_folder(req: FolderRequest, background_tasks: BackgroundTasks):
 
     # Kick off geocoding in background
     background_tasks.add_task(
-        _geocode_images, jpg_files, config.GEOCODER_TIMEOUT
+        _geocode_images, jpg_files, DEFAULT_CONFIG.geocoder_timeout
     )
 
     return {
@@ -730,7 +724,7 @@ async def upload_images(background_tasks: BackgroundTasks, files: list[UploadFil
     reversegeocodeProgress["total"] = len(jpg_files)
 
     # Kick off geocoding in background (same as load_folder)
-    background_tasks.add_task(_geocode_images, jpg_files, config.GEOCODER_TIMEOUT)
+    background_tasks.add_task(_geocode_images, jpg_files, DEFAULT_CONFIG.geocoder_timeout)
 
     return {
         "source_folder": str(session_dir),
@@ -742,12 +736,12 @@ async def upload_images(background_tasks: BackgroundTasks, files: list[UploadFil
 @app.get("/api/image-locations")
 async def get_image_locations(source_folder: str):
     """Return locations for all images in the source folder."""
-    from exif_handler import extract_exif_data
-    
+    from image_metadata_overlay.core.exif import extract_exif_data
+
     folder = Path(source_folder)
     if not folder.exists() or not folder.is_dir():
         raise HTTPException(status_code=400, detail=f"Directory not found: {source_folder}")
-    
+
     jpg_files = _get_jpg_files(str(folder))
     locations = []
     
@@ -851,7 +845,7 @@ async def update_location(req: LocationUpdateRequest):
         raise HTTPException(status_code=400, detail="Both lat and lon required when not resetting")
     
     # Validate coordinates
-    from exif_handler import validate_coordinates
+    from image_metadata_overlay.core.exif import validate_coordinates
     if not validate_coordinates(req.lat, req.lon):
         raise HTTPException(status_code=400, detail=f"Invalid coordinates: lat={req.lat}, lon={req.lon}")
     
@@ -863,11 +857,11 @@ async def update_location(req: LocationUpdateRequest):
     }
     
     # Update address cache in background
-    from exif_handler import reverse_geocode
+    from image_metadata_overlay.core.exif import reverse_geocode
     key = (round(req.lat, 6), round(req.lon, 6))
     if key not in address_cache:
         try:
-            address_cache[key] = reverse_geocode(req.lat, req.lon, timeout=config.GEOCODER_TIMEOUT)
+            address_cache[key] = reverse_geocode(req.lat, req.lon, timeout=DEFAULT_CONFIG.geocoder_timeout)
         except Exception as e:
             logger.warning(f"Geocoding failed for ({req.lat}, {req.lon}): {e}")
     
@@ -889,13 +883,13 @@ async def generate_preview(req: PreviewRequest):
     if not input_path.exists():
         raise HTTPException(status_code=404, detail=f"Image not found: {req.filename}")
 
-    cfg_dict = _settings_to_config_dict(req.settings)
+    cfg = _settings_to_config(req.settings)
 
     # Compute chainage for this image if a reference line is active
     chainage_str: Optional[str] = None
     if active_line is not None and req.settings.show_chainage:
         try:
-            from exif_handler import extract_exif_data
+            from image_metadata_overlay.core.exif import extract_exif_data
             cc = _get_chainage_calculator()
             meta = extract_exif_data(str(input_path), filename=req.filename)
             lat = meta.get("_lat_decimal")
@@ -920,7 +914,7 @@ async def generate_preview(req: PreviewRequest):
     polygon_value_str: Optional[str] = None
     if active_polygon_layer is not None:
         try:
-            from exif_handler import extract_exif_data
+            from image_metadata_overlay.core.exif import extract_exif_data
             if req.filename in location_overrides:
                 ov = location_overrides[req.filename]
                 lat, lon = ov["lat"], ov["lon"]
@@ -934,7 +928,7 @@ async def generate_preview(req: PreviewRequest):
 
     try:
         img_bytes = await asyncio.to_thread(
-            _generate_preview_sync, str(input_path), cfg_dict, chainage_str, polygon_value_str
+            _generate_preview_sync, str(input_path), cfg, chainage_str, polygon_value_str
         )
     except Exception as e:
         logger.error(f"Preview failed: {e}")
@@ -1032,15 +1026,15 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
     except OSError as e:
         raise HTTPException(status_code=400, detail=f"Cannot create output dir: {e}")
 
-    cfg_dict = _settings_to_config_dict(req.settings)
+    cfg = _settings_to_config(req.settings)
 
     # Snapshot which files had location edits before overrides are cleared
     edited_map: dict[str, bool] = {f.name: f.name in location_overrides for f in jpg_files}
 
     # Write staged location overrides to source EXIF before processing
     if location_overrides:
-        from exif_handler import write_gps_to_exif, reverse_geocode
-        
+        from image_metadata_overlay.core.exif import write_gps_to_exif, reverse_geocode
+
         override_results = []
         for jpg_file in jpg_files:
             if jpg_file.name in location_overrides:
@@ -1099,7 +1093,7 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
         "created": datetime.now().isoformat(timespec="seconds"),
         "source_folder": str(source_folder),
         "output_dir": str(output_dir),
-        "settings": cfg_dict,
+        "settings": cfg.to_dict(),
         "filenames": [f.name for f in jpg_files],
         "address_map": dict(address_map),
         "chainage_map": dict(chainage_map),
@@ -1114,7 +1108,7 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
     background_tasks.add_task(
         _run_batch_job,
         job_id, jpg_files, output_dir,
-        cfg_dict, req.settings.file_collision_mode,
+        cfg, req.settings.file_collision_mode,
         req.settings.max_workers, address_map, chainage_map, edited_map,
         polygon_map,
     )
@@ -1282,7 +1276,7 @@ async def calculate_chainages_endpoint(req: CalculateChainagesRequest):
     if not folder.exists() or not folder.is_dir():
         raise HTTPException(status_code=400, detail=f"Directory not found: {req.source_folder}")
     try:
-        from exif_handler import extract_exif_data
+        from image_metadata_overlay.core.exif import extract_exif_data
         cc = _get_chainage_calculator()
         jpg_files = _get_jpg_files(str(folder))
         locs = []
@@ -1475,7 +1469,7 @@ def _build_export_zip(ctx: dict) -> Path:
     """
     import zipfile
     from jinja2 import Environment, FileSystemLoader, select_autoescape
-    from exif_handler import extract_exif_data
+    from image_metadata_overlay.core.exif import extract_exif_data
 
     output_dir = Path(ctx["output_dir"])
     results = ctx.get("results", [])
@@ -1608,7 +1602,7 @@ async def export_html_from_folder(req: FolderExportRequest):
         "created": datetime.now().isoformat(timespec="seconds"),
         "source_folder": str(source_folder),
         "output_dir": str(source_folder),  # images are bundled as-is
-        "settings": _settings_to_config_dict(req.settings),
+        "settings": _settings_to_config(req.settings).to_dict(),
         "filenames": [f.name for f in jpg_files],
         "address_map": _build_address_map(
             jpg_files, req.settings.show_address, req.settings.geocoder_timeout
@@ -1640,4 +1634,10 @@ async def export_html_from_folder(req: FolderExportRequest):
         filename=f"report_{stamp}.zip",
         background=BackgroundTask(lambda: Path(zip_path).unlink(missing_ok=True)),
     )
+
+
+def run(host: str = "127.0.0.1", port: int = 8000):
+    """Start the uvicorn server (console script entry point)."""
+    import uvicorn
+    uvicorn.run("image_metadata_overlay.web.app:app", host=host, port=port)
 

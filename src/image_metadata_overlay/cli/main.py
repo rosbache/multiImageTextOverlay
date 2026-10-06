@@ -13,9 +13,10 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List, Tuple
 from tqdm import tqdm
-import config
-from image_processor import process_image
-from exif_handler import extract_exif_data, reverse_geocode
+from image_metadata_overlay import config as app_config
+from image_metadata_overlay.config import DEFAULT_CONFIG, OverlayConfig
+from image_metadata_overlay.core.overlay import process_image
+from image_metadata_overlay.core.exif import extract_exif_data, reverse_geocode
 
 
 # Configure logging
@@ -83,45 +84,45 @@ Examples:
     parser.add_argument(
         '--input', '-i',
         type=str,
-        default=config.INPUT_DIR,
-        help=f'Input directory containing images (default: {config.INPUT_DIR})'
+        default=app_config.INPUT_DIR,
+        help=f'Input directory containing images (default: {app_config.INPUT_DIR})'
     )
     parser.add_argument(
         '--output', '-o',
         type=str,
-        default=config.OUTPUT_DIR,
-        help=f'Output directory for processed images (default: {config.OUTPUT_DIR})'
+        default=app_config.OUTPUT_DIR,
+        help=f'Output directory for processed images (default: {app_config.OUTPUT_DIR})'
     )
     
     # Configuration overrides
     parser.add_argument(
         '--position', '-p',
         choices=['top-left', 'top-right', 'bottom-left', 'bottom-right'],
-        help=f'Text position on image (default: {config.TEXT_POSITION})'
+        help=f'Text position on image (default: {DEFAULT_CONFIG.text_position})'
     )
     parser.add_argument(
         '--color', '-c',
         nargs=3,
         type=int,
         metavar=('R', 'G', 'B'),
-        help=f'Text color as RGB values 0-255 (default: {config.TEXT_COLOR})'
+        help=f'Text color as RGB values 0-255 (default: {DEFAULT_CONFIG.text_color})'
     )
     parser.add_argument(
         '--font-size', '-s',
         type=int,
-        help=f'Font size in points (default: {config.FONT_SIZE})'
+        help=f'Font size in points (default: {DEFAULT_CONFIG.font_size})'
     )
     parser.add_argument(
         '--quality', '-q',
         type=int,
-        help=f'Output JPEG quality 1-100 (default: {config.OUTPUT_QUALITY})'
+        help=f'Output JPEG quality 1-100 (default: {DEFAULT_CONFIG.output_quality})'
     )
     
     # Coordinate system options
     parser.add_argument(
         '--target-epsg',
         type=int,
-        help=f'Target EPSG code for coordinate transformation (default: {config.TARGET_EPSG})'
+        help=f'Target EPSG code for coordinate transformation (default: {DEFAULT_CONFIG.target_epsg})'
     )
     parser.add_argument(
         '--no-utm',
@@ -153,7 +154,7 @@ Examples:
         '--direction-precision',
         type=int,
         choices=[8, 16],
-        help=f'Cardinal direction precision: 8 (N,NE,E...) or 16 (N,NNE,NE...) (default: {config.DIRECTION_PRECISION})'
+        help=f'Cardinal direction precision: 8 (N,NE,E...) or 16 (N,NNE,NE...) (default: {DEFAULT_CONFIG.direction_precision})'
     )
     
     # Project information
@@ -167,14 +168,14 @@ Examples:
     parser.add_argument(
         '--workers', '-w',
         type=int,
-        default=config.MAX_WORKERS,
-        help=f'Maximum number of parallel workers (default: {config.MAX_WORKERS})'
+        default=DEFAULT_CONFIG.max_workers,
+        help=f'Maximum number of parallel workers (default: {DEFAULT_CONFIG.max_workers})'
     )
     parser.add_argument(
         '--collision',
         choices=['overwrite', 'skip', 'rename'],
-        default=config.FILE_COLLISION_MODE,
-        help=f'File collision handling mode (default: {config.FILE_COLLISION_MODE})'
+        default=DEFAULT_CONFIG.file_collision_mode,
+        help=f'File collision handling mode (default: {DEFAULT_CONFIG.file_collision_mode})'
     )
     parser.add_argument(
         '--overrides',
@@ -208,44 +209,48 @@ Examples:
     return parser.parse_args()
 
 
-def apply_argument_overrides(args):
+def build_config(args) -> OverlayConfig:
     """
-    Apply command-line argument overrides to config module.
-    
+    Build the job's immutable OverlayConfig from defaults plus CLI overrides.
+
     Args:
         args: Parsed command-line arguments
+
+    Returns:
+        OverlayConfig with all CLI overrides applied
     """
+    cfg = DEFAULT_CONFIG
     if args.position:
-        config.TEXT_POSITION = args.position
+        cfg = cfg.with_overrides(text_position=args.position)
     if args.color:
-        config.TEXT_COLOR = tuple(args.color)
+        cfg = cfg.with_overrides(text_color=tuple(args.color))
     if args.font_size:
-        config.FONT_SIZE = args.font_size
+        cfg = cfg.with_overrides(font_size=args.font_size)
     if args.quality:
-        config.OUTPUT_QUALITY = args.quality
+        cfg = cfg.with_overrides(output_quality=args.quality)
     if args.target_epsg:
-        config.TARGET_EPSG = args.target_epsg
+        cfg = cfg.with_overrides(target_epsg=args.target_epsg)
     if args.no_utm:
-        config.SHOW_UTM_COORDINATES = False
-    
+        cfg = cfg.with_overrides(show_utm_coordinates=False)
+
     # Direction settings
     if args.show_direction:
-        config.SHOW_DIRECTION = True
+        cfg = cfg.with_overrides(show_direction=True)
     if args.no_direction:
-        config.SHOW_DIRECTION = False
+        cfg = cfg.with_overrides(show_direction=False)
     if args.direction_precision:
-        config.DIRECTION_PRECISION = args.direction_precision
+        cfg = cfg.with_overrides(direction_precision=args.direction_precision)
 
     # Address settings
     if args.no_address:
-        config.SHOW_ADDRESS = False
-    
+        cfg = cfg.with_overrides(show_address=False)
+
     # Project information
     if args.project_info:
-        config.PROJECT_INFO = args.project_info
-    
-    # Update file collision mode
-    config.FILE_COLLISION_MODE = args.collision
+        cfg = cfg.with_overrides(project_info=args.project_info)
+
+    # File collision mode
+    return cfg.with_overrides(file_collision_mode=args.collision)
 
 
 def get_unique_output_path(output_path: Path) -> Path:
@@ -291,7 +296,7 @@ def process_single_image(args_tuple) -> Tuple[bool, str, str]:
     if len(tuple_args) < 6:
         raise ValueError(f"process_single_image expects at least 6 args, got {len(tuple_args)}")
 
-    input_path, output_dir, collision_mode, config_dict, address, chainage = tuple_args[:6]
+    input_path, output_dir, collision_mode, overlay_cfg, address, chainage = tuple_args[:6]
 
     # Optional trailing args
     location_edited = False
@@ -305,15 +310,13 @@ def process_single_image(args_tuple) -> Tuple[bool, str, str]:
     if len(tuple_args) >= 8:
         polygon_value = tuple_args[7]
 
-    # Apply config overrides in worker process
-    import config
-    for key, value in config_dict.items():
-        setattr(config, key, value)
+    # overlay_cfg is an immutable OverlayConfig passed from the parent process
+    # (no config-module mutation in workers).
 
     # Create output path with same filename, optionally appending the polygon field
     # value (sanitised) to the stem.
     output_name = input_path.name
-    if polygon_value and getattr(config, "POLYGON_APPEND_FILENAME", False):
+    if polygon_value and overlay_cfg.polygon_append_filename:
         stem = input_path.stem
         suffix = input_path.suffix
         safe = _sanitise_filename_fragment(str(polygon_value))
@@ -335,6 +338,7 @@ def process_single_image(args_tuple) -> Tuple[bool, str, str]:
         address=address, chainage=chainage,
         location_edited=location_edited,
         polygon_value=polygon_value,
+        config=overlay_cfg,
     )
 
     if success:
@@ -365,33 +369,33 @@ def main():
     # Setup logging
     setup_logging(args.verbose, args.quiet, args.log_file)
     
-    # Apply argument overrides to config
-    apply_argument_overrides(args)
-    
+    # Build the job config from defaults plus CLI overrides
+    overlay_cfg = build_config(args)
+
     # Validate configuration
     try:
-        config.validate_config()
+        overlay_cfg.validate()
         logging.debug("Configuration validated successfully")
     except ValueError as e:
         logging.error(f"Configuration error: {e}")
         sys.exit(1)
     
     # Validate EPSG code if UTM coordinates are enabled
-    if config.SHOW_UTM_COORDINATES:
+    if overlay_cfg.show_utm_coordinates:
         try:
             from pyproj import CRS
             # Test if EPSG code is valid
-            test_crs = CRS.from_epsg(config.TARGET_EPSG)
-            logging.info(f"Using coordinate system: {test_crs.name} (EPSG:{config.TARGET_EPSG})")
+            test_crs = CRS.from_epsg(overlay_cfg.target_epsg)
+            logging.info(f"Using coordinate system: {test_crs.name} (EPSG:{overlay_cfg.target_epsg})")
         except Exception as e:
-            logging.error(f"Invalid EPSG code {config.TARGET_EPSG}: {e}")
+            logging.error(f"Invalid EPSG code {overlay_cfg.target_epsg}: {e}")
             logging.error("Please specify a valid EPSG code using --target-epsg")
             logging.error("Common EPSG codes: 25832 (UTM 32N), 25833 (UTM 33N), 32632 (WGS84 UTM 32N)")
             sys.exit(1)
     
     # Determine input and output directories
-    input_dir = Path(args.input if args.input else config.INPUT_DIR)
-    output_dir = Path(args.output if args.output else config.OUTPUT_DIR)
+    input_dir = Path(args.input if args.input else app_config.INPUT_DIR)
+    output_dir = Path(args.output if args.output else app_config.OUTPUT_DIR)
     
     # Check if input directory exists
     if not input_dir.exists():
@@ -421,7 +425,7 @@ def main():
     # Load and apply location overrides if provided
     if args.overrides:
         import json
-        from exif_handler import write_gps_to_exif
+        from image_metadata_overlay.core.exif import write_gps_to_exif
         
         try:
             with open(args.overrides, 'r', encoding='utf-8') as f:
@@ -478,40 +482,28 @@ def main():
         for jpg_file in jpg_files:
             logging.info(f"  - {jpg_file.name}")
         logging.info(f"\nConfiguration:")
-        logging.info(f"  Text position: {config.TEXT_POSITION}")
-        logging.info(f"  Text color: RGB{config.TEXT_COLOR}")
-        logging.info(f"  Font size: {config.FONT_SIZE}")
-        logging.info(f"  Output quality: {config.OUTPUT_QUALITY}")
-        logging.info(f"  Show UTM coordinates: {config.SHOW_UTM_COORDINATES}")
-        if config.SHOW_UTM_COORDINATES:
-            logging.info(f"  Target EPSG: {config.TARGET_EPSG}")
-            logging.info(f"  UTM Zone: {config.UTM_ZONE}{config.UTM_HEMISPHERE}")
-        logging.info(f"  Show direction: {config.SHOW_DIRECTION}")
-        if config.SHOW_DIRECTION:
-            logging.info(f"  Direction precision: {config.DIRECTION_PRECISION} sectors")
-        if config.PROJECT_INFO:
-            logging.info(f"  Project info: {config.PROJECT_INFO}")
+        logging.info(f"  Text position: {overlay_cfg.text_position}")
+        logging.info(f"  Text color: RGB{overlay_cfg.text_color}")
+        logging.info(f"  Font size: {overlay_cfg.font_size}")
+        logging.info(f"  Output quality: {overlay_cfg.output_quality}")
+        logging.info(f"  Show UTM coordinates: {overlay_cfg.show_utm_coordinates}")
+        if overlay_cfg.show_utm_coordinates:
+            logging.info(f"  Target EPSG: {overlay_cfg.target_epsg}")
+            logging.info(f"  UTM Zone: {overlay_cfg.utm_zone}{overlay_cfg.utm_hemisphere}")
+        logging.info(f"  Show direction: {overlay_cfg.show_direction}")
+        if overlay_cfg.show_direction:
+            logging.info(f"  Direction precision: {overlay_cfg.direction_precision} sectors")
+        if overlay_cfg.project_info:
+            logging.info(f"  Project info: {overlay_cfg.project_info}")
         logging.info(f"  Max workers: {args.workers}")
         logging.info(f"  Collision mode: {args.collision}")
         return
     
-    # Prepare arguments for multiprocessing
-    config_dict = {
-        'TEXT_POSITION': config.TEXT_POSITION,
-        'TEXT_COLOR': config.TEXT_COLOR,
-        'FONT_SIZE': config.FONT_SIZE,
-        'OUTPUT_QUALITY': config.OUTPUT_QUALITY,
-        'TARGET_EPSG': config.TARGET_EPSG,
-        'SHOW_UTM_COORDINATES': config.SHOW_UTM_COORDINATES,
-        'SHOW_DIRECTION': config.SHOW_DIRECTION,
-        'DIRECTION_PRECISION': config.DIRECTION_PRECISION,
-        'PROJECT_INFO': config.PROJECT_INFO,
-        'SHOW_ADDRESS': config.SHOW_ADDRESS,
-    }
+    # The immutable job config is passed to each worker process.
 
     # Pre-geocode coordinates in the main process to share cache across all images
     address_map: dict = {}
-    if config.SHOW_ADDRESS:
+    if overlay_cfg.show_address:
         logging.info("Looking up addresses for GPS coordinates...")
         for jpg_file in jpg_files:
             try:
@@ -520,7 +512,7 @@ def main():
                 lon = meta.get('_lon_decimal')
                 if lat is not None and lon is not None:
                     address_map[jpg_file.name] = reverse_geocode(
-                        lat, lon, timeout=config.GEOCODER_TIMEOUT
+                        lat, lon, timeout=overlay_cfg.geocoder_timeout
                     )
                 else:
                     address_map[jpg_file.name] = None
@@ -529,7 +521,8 @@ def main():
                 address_map[jpg_file.name] = None
 
     process_args = [
-        (jpg_file, output_dir, args.collision, config_dict, address_map.get(jpg_file.name))
+        (jpg_file, output_dir, args.collision, overlay_cfg,
+         address_map.get(jpg_file.name), None)  # chainage: no reference line in CLI (yet)
         for jpg_file in jpg_files
     ]
     
