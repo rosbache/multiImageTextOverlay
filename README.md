@@ -1,6 +1,6 @@
-# Image Metadata Overlay
+﻿# Image Metadata Overlay
 
-A Python tool for processing JPG images with EXIF-driven text overlays. It supports CLI and FastAPI-based web workflows for metadata overlays, coordinate conversion, address lookup, and GPS correction, and it can also calculate chainage from a SOSI reference line in the web UI.
+A Python tool for processing JPG images with EXIF-driven text overlays. It supports CLI and FastAPI-based web workflows for metadata overlays, coordinate conversion, address lookup, and GPS correction, and it can calculate chainage from a SOSI reference line and look up polygon field values from a GeoPackage layer in both the web UI and the CLI.
 
 For Windows executable build and deployment instructions, see [BUILDING.md](BUILDING.md).
 
@@ -8,7 +8,7 @@ For Windows executable build and deployment instructions, see [BUILDING.md](BUIL
 
 - Extracts EXIF metadata from JPG images
 - Displays date and time from image metadata
-- Shows GPS location in human-readable format (for example, `40°42'46"N, 74°0'21"W`)
+- Shows GPS location in human-readable format (for example, `40Â°42'46"N, 74Â°0'21"W`)
 - Corrects wrong GPS locations before processing, either on the map or through a JSON override file
 - Converts GPS coordinates to UTM or other projected coordinate systems
 - Displays image direction in degrees with cardinal directions
@@ -30,11 +30,11 @@ Project XYZ - Survey 2024
 
 image001
 Date: 2024-08-15 14:30:22
-Location: 40°42'46"N, 74°0'21"W
+Location: 40Â°42'46"N, 74Â°0'21"W
 UTM 32N: 123456.78E, 987654.32N
-Address: Exampleveien 12, 3530 Røyse
+Address: Exampleveien 12, 3530 RÃ¸yse
 Height: 125.3 m
-Direction: 45° (NE)
+Direction: 45Â° (NE)
 Chainage: kp 1+234
 ```
 <img width="344" height="60" alt="image" src="https://github.com/user-attachments/assets/24aea6f3-dd10-42ec-88d3-94d6bc6ec492" />
@@ -46,50 +46,69 @@ If an image has no metadata, it will display: "No metadata available"
 
 ## Project Structure
 
+The code is a src-layout Python package (`src/image_metadata_overlay`) split into layers:
+
 ```
 multiImageTextOverlay/
-├── main.py              # CLI entry point
-├── web_app.py           # FastAPI web UI entry point
-├── image_processor.py   # Core image processing and overlay rendering
-├── exif_handler.py      # EXIF extraction, GPS utilities, and reverse geocoding
-├── chainage_calculator.py # SOSI reference line loading and chainage calculations
-├── sosi_parser.py       # General SOSI parsing utilities
-├── sosi_koordsys.jsonc  # SOSI coordinate-system lookup data
-├── config.py            # User-configurable defaults with validation
-├── launcher.py          # Desktop launcher entry point
-├── start_web.bat        # Windows helper for starting the web app
-├── requirements.txt     # Python dependencies
-├── templates/
-│   └── index.html       # Web UI (single-page, no build step required)
-├── input/               # Place your JPG images here (configurable)
-├── output/              # Processed images will be saved here (configurable)
-└── fonts/               # TrueType font files
-    └── arial.ttf        # Default font (you need to add this)
+â”œâ”€â”€ pyproject.toml             # Packaging metadata + console entry points
+â”œâ”€â”€ launcher.spec              # PyInstaller spec (desktop exe)
+â”œâ”€â”€ build.ps1                  # Build script for the exe
+â”œâ”€â”€ start_web.bat              # Windows helper for starting the web app
+â”œâ”€â”€ src/image_metadata_overlay/
+â”‚   â”œâ”€â”€ config.py              # Frozen OverlayConfig dataclass (immutable, injected)
+â”‚   â”œâ”€â”€ paths.py               # Asset resolution (dev + PyInstaller _MEIPASS)
+â”‚   â”œâ”€â”€ launcher.py            # Desktop launcher entry point
+â”‚   â”œâ”€â”€ core/
+â”‚   â”‚   â”œâ”€â”€ exif.py            # EXIF extraction, GPS utils, reverse geocoding
+â”‚   â”‚   â””â”€â”€ overlay.py         # Image processing and overlay rendering
+â”‚   â”œâ”€â”€ geo/
+â”‚   â”‚   â”œâ”€â”€ sosi.py            # General SOSI file parsing
+â”‚   â”‚   â”œâ”€â”€ chainage.py        # SOSI reference line + chainage calculations
+â”‚   â”‚   â””â”€â”€ polygons.py        # GeoPackage layer I/O + point-in-polygon lookup
+â”‚   â”œâ”€â”€ services/
+â”‚   â”‚   â”œâ”€â”€ precompute.py      # Address/chainage/polygon map building (CLI + web shared)
+â”‚   â”‚   â”œâ”€â”€ batch.py           # Shared multiprocessing worker (process_single_image)
+â”‚   â”‚   â””â”€â”€ export.py          # HTML report zip builder
+â”‚   â”œâ”€â”€ cli/
+â”‚   â”‚   â”œâ”€â”€ main.py            # CLI entry point (argparse)
+â”‚   â”‚   â””â”€â”€ context.py         # Lightweight lookup context for CLI precompute
+â”‚   â”œâ”€â”€ web/
+â”‚   â”‚   â”œâ”€â”€ app.py             # create_app() factory + uvicorn entry
+â”‚   â”‚   â”œâ”€â”€ state.py           # AppState (all mutable web-session state)
+â”‚   â”‚   â”œâ”€â”€ models.py          # Pydantic request models
+â”‚   â”‚   â”œâ”€â”€ processing_helpers.py  # OverlaySettings â†’ OverlayConfig
+â”‚   â”‚   â””â”€â”€ routes/            # settings, images, processing, geo, export routers
+â”‚   â””â”€â”€ assets/
+â”‚       â”œâ”€â”€ templates/         # index.html, export_report.html
+â”‚       â”œâ”€â”€ fonts/             # arial.ttf
+â”‚       â””â”€â”€ data/              # sosi_koordsys.jsonc
+â”œâ”€â”€ tests/                     # pytest suite
+â”œâ”€â”€ input/                     # Place your JPG images here (configurable)
+â””â”€â”€ output/                    # Processed images will be saved here (configurable)
 ```
 
 ## Installation
 
 1. **Clone or download this project**
 
-2. **Install Python dependencies:**
+2. **Install the package (editable, with console scripts):**
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
+   This installs the `image-overlay` (CLI) and `image-overlay-web` (web server) commands.
 
-3. **Add a TrueType font file:**
-   - Download a font file (e.g., Arial, Roboto, etc.) in `.ttf` format
-   - Place it in the `fonts/` directory
-   - Update `FONT_PATH` in `config.py` to match your font filename
-
-4. **Start the web UI:**
+3. **Start the web UI:**
    ```bash
-   uvicorn web_app:app --host 127.0.0.1 --port 8000
+   image-overlay-web
    ```
+   or equivalently `uvicorn image_metadata_overlay.web.app:app --host 127.0.0.1 --port 8000`.
    Then open **http://localhost:8000** in your browser.
 
-   On Windows you can also double-click **`start_web.bat`** — it activates the virtual environment and starts the server automatically.
+   On Windows you can also double-click **`start_web.bat`** â€” it activates the virtual environment and starts the server automatically.
 
    > To stop the server press **Ctrl + C** in the terminal.
+
+The bundled TrueType font (`assets/fonts/arial.ttf`) and SOSI lookup data are resolved automatically from the package â€” no path configuration needed.
 
 ## Usage
 
@@ -97,8 +116,9 @@ multiImageTextOverlay/
 
 Start the local web server:
 ```bash
-uvicorn web_app:app --host 127.0.0.1 --port 8000
+image-overlay-web
 ```
+(or `uvicorn image_metadata_overlay.web.app:app --host 127.0.0.1 --port 8000`)
 Or on Windows, double-click `start_web.bat`.
 
 Then open **http://localhost:8000** in your browser.
@@ -112,8 +132,8 @@ The web interface has three panels and two main views:
 | **Right** | Scrollable list of loaded images; click to select and optionally multi-select for partial processing |
 
 **Loading images:**
-- **Folder tab** — type (or paste) a folder path and click *Load*. The server scans the folder and begins looking up addresses in the background.
-- **Upload tab** — drag-and-drop JPG files onto the drop zone, or click to browse. Files are copied to a temporary folder on the server.
+- **Folder tab** â€” type (or paste) a folder path and click *Load*. The server scans the folder and begins looking up addresses in the background.
+- **Upload tab** â€” drag-and-drop JPG files onto the drop zone, or click to browse. Files are copied to a temporary folder on the server.
 
 **Processing:**  
 Click *Process All* to batch-process every loaded image, or *Process Selected* to process only the currently selected subset. A progress bar and live status message update as each file completes. Output is written to the *Output folder* field (defaults to `<input folder>/processed` if left blank).
@@ -122,7 +142,7 @@ Click *Process All* to batch-process every loaded image, or *Process Selected* t
 
 Some images may have incorrect GPS coordinates (wrong location metadata). The map-based editor lets you visually correct these before processing:
 
-1. **View locations**: Click the *Map* tab in the center panel to see all images with GPS data plotted on an interactive map (Kartverket basemap — Norway only)
+1. **View locations**: Click the *Map* tab in the center panel to see all images with GPS data plotted on an interactive map (Kartverket basemap â€” Norway only)
 2. **Select image**: Click any marker on the map (or select from the image list) to highlight an image
 3. **Edit location**: 
    - Drag the marker to the correct position, or
@@ -131,7 +151,7 @@ Some images may have incorrect GPS coordinates (wrong location metadata). The ma
 5. **Apply changes**: When you click *Process All* or *Process Selected*, staged edits are written to the source EXIF data *before* processing, then geocoding is refreshed for the new coordinates.
 6. **Reset**: Use *Reset Location* to undo edits for the selected image, or *Reset All* to clear all staged edits.
 
-> **Important**: Location edits modify the source image EXIF data when you process. This is intentional — it ensures the corrected location is permanently saved and will be used if you process the images again. Original files are modified only when you click Process.
+> **Important**: Location edits modify the source image EXIF data when you process. This is intentional â€” it ensures the corrected location is permanently saved and will be used if you process the images again. Original files are modified only when you click Process.
 
 **Reference Lines and Chainage:**
 
@@ -151,43 +171,43 @@ You can also correct GPS locations via the CLI using a JSON override file:
 
 ```bash
 # Process with default settings
-python main.py
+image-overlay
 
 # Specify custom input/output directories
-python main.py --input photos --output processed
+image-overlay --input photos --output processed
 
 # Customize text appearance
-python main.py --position top-right --color 255 0 0 --font-size 72
+image-overlay --position top-right --color 255 0 0 --font-size 72
 
 # Control processing
-python main.py --workers 4 --collision skip
+image-overlay --workers 4 --collision skip
 
 # Disable reverse geocoding
-python main.py --no-address
+image-overlay --no-address
 
 # Add project information
-python main.py --project-info "Highway Survey 2026 - Phase 1"
+image-overlay --project-info "Highway Survey 2026 - Phase 1"
 
 # Apply corrected GPS coordinates before processing
-python main.py --overrides overrides.json
+image-overlay --overrides overrides.json
 
 # Use 16-sector compass for more precise directions
-python main.py --direction-precision 16
+image-overlay --direction-precision 16
 
 # Disable direction display
-python main.py --no-direction
+image-overlay --no-direction
 
 # Enable verbose logging
-python main.py --verbose
+image-overlay --verbose
 
 # Save logs to file
-python main.py --log-file process.log
+image-overlay --log-file process.log
 
 # Preview without processing
-python main.py --dry-run
+image-overlay --dry-run
 
 # Combine options
-python main.py -i photos -o processed -p top-right -c 255 255 0 -s 60 --project-info "Survey 2026" -v
+image-overlay -i photos -o processed -p top-right -c 255 255 0 -s 60 --project-info "Survey 2026" -v
 ```
 
 ### Available Options
@@ -210,6 +230,17 @@ python main.py -i photos -o processed -p top-right -c 255 255 0 -s 60 --project-
 --overrides FILE              JSON file with GPS location overrides
 -w, --workers N               Maximum number of parallel workers
 --collision MODE              File collision handling: overwrite, skip, rename
+--sosi-file FILE              SOSI reference line; enables chainage overlay
+--kurve ID                    SOSI object ID of the KURVE/LINJE (default: first)
+--reverse-line                Reverse reference line direction for chainage
+--chainage-prefix TEXT        Chainage prefix (default: kp)
+--chainage-start-m M          Offset added to all chainage values
+--show-chainage-offset        Append L/R perpendicular offset to chainage text
+--gpkg-file FILE              GeoPackage with a polygon layer for value lookup
+--gpkg-layer NAME             Layer name (default: first polygon layer)
+--gpkg-field NAME             Attribute field to look up (default: first column)
+--polygon-append-filename     Append polygon field value to output filenames
+--polygon-append-project-info Show polygon value under project info
 --dry-run                     Preview files without processing
 -v, --verbose                 Enable debug logging
 --quiet                       Suppress console output except errors
@@ -218,7 +249,10 @@ python main.py -i photos -o processed -p top-right -c 255 255 0 -s 60 --project-
 
 ## Configuration Options
 
-Edit `config.py` to customize default settings:
+Defaults live in the immutable `OverlayConfig` dataclass in
+`src/image_metadata_overlay/config.py` (the CLI builds it from `DEFAULT_CONFIG`
+plus your flags; the web UI builds it from the per-request settings). Edit
+the dataclass defaults there to change application-wide defaults:
 
 ### Directory Settings
 - `INPUT_DIR`: Default input directory (default: "input")
@@ -249,8 +283,8 @@ Edit `config.py` to customize default settings:
 ### Direction Settings
 - `SHOW_DIRECTION`: Enable/disable image direction display from GPS data (default: True)
 - `DIRECTION_PRECISION`: Cardinal direction precision - 8 or 16 sectors (default: 8)
-  - 8 sectors: N, NE, E, SE, S, SW, W, NW (45° increments)
-  - 16 sectors: N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW (22.5° increments)
+  - 8 sectors: N, NE, E, SE, S, SW, W, NW (45Â° increments)
+  - 16 sectors: N, NNE, NE, ENE, E, ESE, SE, SSE, S, SSW, SW, WSW, W, WNW, NW, NNW (22.5Â° increments)
 
 ### Project Information
 - `PROJECT_INFO`: Optional text displayed at the top of the overlay (default: None)
@@ -287,13 +321,13 @@ The coordinate conversion uses the **pyproj** library, which provides accurate t
 
 When `SHOW_ADDRESS = True`, the tool looks up the nearest street address for each image's GPS coordinates and adds it to the overlay.
 
-- **Provider**: [Nominatim](https://nominatim.org/) (OpenStreetMap), via the **geopy** library — no API key required
+- **Provider**: [Nominatim](https://nominatim.org/) (OpenStreetMap), via the **geopy** library â€” no API key required
 - **Rate limiting**: Nominatim enforces a **1 request per second** policy. The tool respects this automatically.
 - **In-memory cache**: Coordinates rounded to 6 decimal places (~0.1 m precision) are cached so the same location is never looked up twice within a single run.
 - **Pre-geocoding in CLI**: All GPS coordinates are resolved in the main process *before* images are dispatched to worker processes, so the cache is shared across all workers.
 - **Pre-geocoding in Web UI**: After loading a folder or uploading files, the server begins geocoding in the background. Preview and batch processing use the cached addresses automatically.
 - **Timeout**: Controlled by `GEOCODER_TIMEOUT` in `config.py` (default: 10 seconds). Increase this on slow connections.
-- **Graceful fallback**: If a lookup fails or times out, the address line is simply omitted from the overlay — processing continues normally.
+- **Graceful fallback**: If a lookup fails or times out, the address line is simply omitted from the overlay â€” processing continues normally.
 - **Privacy note**: GPS coordinates are sent to the public Nominatim service. For sensitive locations, set `SHOW_ADDRESS = False` or host your own Nominatim instance and update the `user_agent` in `exif_handler.py`.
 
 ### Chainage from SOSI Reference Lines
@@ -324,7 +358,7 @@ When `SHOW_CHAINAGE = True` and a reference line is active in the web UI, the to
 ### Image Direction
 The tool extracts GPS image direction (bearing) from EXIF data when available:
 - **Automatic extraction**: Reads `GPSImgDirection` from EXIF metadata
-- **Degree display**: Shows precise bearing (0-360°)
+- **Degree display**: Shows precise bearing (0-360Â°)
 - **Cardinal conversion**: Converts to human-readable directions (N, NE, E, etc.)
 - **Configurable precision**: Choose 8-sector or 16-sector compass
 - **Graceful fallback**: Shows "Direction: N/A" when GPS direction is unavailable

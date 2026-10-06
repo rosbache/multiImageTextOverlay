@@ -16,7 +16,7 @@ Create the environment once, from the repository root:
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
 
 ## Build
