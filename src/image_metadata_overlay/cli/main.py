@@ -158,6 +158,68 @@ Examples:
         help=f'Cardinal direction precision: 8 (N,NE,E...) or 16 (N,NNE,NE...) (default: {DEFAULT_CONFIG.direction_precision})'
     )
     
+    # Chainage / reference line (SOSI)
+    parser.add_argument(
+        '--sosi-file',
+        type=str,
+        metavar='FILE',
+        help='SOSI file (.sos/.sosi) with a reference line; enables chainage overlay'
+    )
+    parser.add_argument(
+        '--kurve',
+        type=int,
+        metavar='ID',
+        help='SOSI object ID of the KURVE/LINJE to use (default: first found)'
+    )
+    parser.add_argument(
+        '--reverse-line',
+        action='store_true',
+        help='Reverse the reference line direction for chainage'
+    )
+    parser.add_argument(
+        '--chainage-prefix',
+        type=str,
+        help=f'Chainage text prefix (default: {DEFAULT_CONFIG.chainage_prefix})'
+    )
+    parser.add_argument(
+        '--chainage-start-m',
+        type=float,
+        help='Offset added to all chainage values (e.g. 1500 to start at km 1+500)'
+    )
+    parser.add_argument(
+        '--show-chainage-offset',
+        action='store_true',
+        help='Append L/R perpendicular offset to the chainage text'
+    )
+    
+    # Polygon layer (GeoPackage)
+    parser.add_argument(
+        '--gpkg-file',
+        type=str,
+        metavar='FILE',
+        help='GeoPackage file with a polygon layer to look up per-image values'
+    )
+    parser.add_argument(
+        '--gpkg-layer',
+        type=str,
+        help='Layer name inside the GeoPackage (default: first polygon layer)'
+    )
+    parser.add_argument(
+        '--gpkg-field',
+        type=str,
+        help='Attribute field whose value is looked up (default: first column)'
+    )
+    parser.add_argument(
+        '--polygon-append-filename',
+        action='store_true',
+        help='Append the polygon field value to output filenames'
+    )
+    parser.add_argument(
+        '--polygon-append-project-info',
+        action='store_true',
+        help='Show the polygon field value as a line under the project info'
+    )
+    
     # Project information
     parser.add_argument(
         '--project-info',
@@ -249,6 +311,22 @@ def build_config(args) -> OverlayConfig:
     # Project information
     if args.project_info:
         cfg = cfg.with_overrides(project_info=args.project_info)
+
+    # Chainage: --sosi-file enables display
+    if args.sosi_file:
+        cfg = cfg.with_overrides(show_chainage=True)
+    if args.chainage_prefix:
+        cfg = cfg.with_overrides(chainage_prefix=args.chainage_prefix)
+    if args.chainage_start_m is not None:
+        cfg = cfg.with_overrides(chainage_start_m=args.chainage_start_m)
+    if args.show_chainage_offset:
+        cfg = cfg.with_overrides(show_chainage_offset=True)
+
+    # Polygon layer
+    if args.polygon_append_filename:
+        cfg = cfg.with_overrides(polygon_append_filename=True)
+    if args.polygon_append_project_info:
+        cfg = cfg.with_overrides(polygon_append_project_info=True)
 
     # File collision mode
     return cfg.with_overrides(file_collision_mode=args.collision)
@@ -396,6 +474,52 @@ def main():
     
     # The immutable job config is passed to each worker process.
 
+    # Build the lookup context and any geospatial layers (SOSI line, polygons)
+    from image_metadata_overlay.cli.context import CliContext
+    ctx = CliContext()
+
+    if args.sosi_file:
+        try:
+            from image_metadata_overlay.geo import chainage as cc
+            kurves = cc.list_sosi_kurves(args.sosi_file)
+            if not kurves:
+                logging.error(f"No KURVE/LINJE objects found in {args.sosi_file}")
+                sys.exit(1)
+            object_id = args.kurve if args.kurve is not None else kurves[0]["id"]
+            line = cc.load_sosi_line(args.sosi_file, object_id, reverse=args.reverse_line)
+            ctx.active_line = {"line": line}
+            logging.info(
+                f"Loaded reference line (object {object_id}, "
+                f"{line.total_length:.0f} m, EPSG:{line.epsg}) from {args.sosi_file}"
+            )
+        except SystemExit:
+            raise
+        except Exception as e:
+            logging.error(f"Failed to load SOSI line from {args.sosi_file}: {e}")
+            sys.exit(1)
+
+    if args.gpkg_file:
+        try:
+            from image_metadata_overlay.geo import polygons
+            layer_name = args.gpkg_layer
+            if layer_name is None:
+                layers = polygons.read_vector_layers(args.gpkg_file)
+                poly_layers = [l["name"] for l in layers
+                               if "polygon" in l.get("geometry_type", "").lower()]
+                layer_name = poly_layers[0] if poly_layers else layers[0]["name"]
+                logging.info(f"Auto-selected polygon layer '{layer_name}'")
+            ctx.active_polygon_layer = polygons.load_polygon_layer(
+                args.gpkg_file, layer_name, args.gpkg_field
+            )
+            logging.info(
+                f"Loaded polygon layer '{layer_name}' field "
+                f"'{ctx.active_polygon_layer['field']}' "
+                f"({len(ctx.active_polygon_layer['features'])} features)"
+            )
+        except Exception as e:
+            logging.error(f"Failed to load polygon layer from {args.gpkg_file}: {e}")
+            sys.exit(1)
+
     # Pre-geocode coordinates in the main process to share cache across all images
     address_map: dict = {}
     if overlay_cfg.show_address:
@@ -415,9 +539,15 @@ def main():
                 logging.warning(f"Could not get address for {jpg_file.name}: {e}")
                 address_map[jpg_file.name] = None
 
+    # Precompute chainage / polygon values per image (no-op when layers unset)
+    from image_metadata_overlay.services import precompute
+    chainage_map = precompute.build_chainage_map(jpg_files, overlay_cfg, ctx)
+    polygon_map = precompute.build_polygon_value_map(jpg_files, ctx)
+
     process_args = [
         (jpg_file, output_dir, args.collision, overlay_cfg,
-         address_map.get(jpg_file.name), None)  # chainage: no reference line in CLI (yet)
+         address_map.get(jpg_file.name), chainage_map.get(jpg_file.name),
+         False, polygon_map.get(jpg_file.name))
         for jpg_file in jpg_files
     ]
     
