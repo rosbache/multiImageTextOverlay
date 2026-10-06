@@ -19,6 +19,9 @@ OUTPUT_DIR = r"C:\Users\eor\OneDrive - Multiconsult\Pictures\kabeltrase\processe
 PROJECT_INFO = "22kV Kabeltrase Ringerike"            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
 # PROJECT_INFO = "Arbion Hønefoss"            # Optional project information text to display at top (e.g., "Project XYZ - Survey 2024")
 
+# Overlay toggle
+ADD_TEXT_OVERLAY = True       # Set False to copy images without drawing any text (lossless copy)
+
 # Text appearance
 TEXT_COLOR = (255, 255, 255)  # RGB tuple - White
 OUTLINE_COLOR = (0, 0, 0)     # RGB tuple - Black outline for visibility
