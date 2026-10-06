@@ -7,6 +7,7 @@ Handles image reading, text overlay creation, and saving processed images.
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from pathlib import Path
 import logging
+import shutil
 import piexif
 import config
 from exif_handler import extract_exif_data
@@ -147,6 +148,15 @@ def process_image(input_path: str, output_path: str, address: str = None, chaina
         True if successful, False otherwise
     """
     try:
+        # No-text mode: lossless copy — pixels and EXIF stay byte-identical
+        if not getattr(config, "ADD_TEXT_OVERLAY", True):
+            if Path(input_path).resolve() == Path(output_path).resolve():
+                logging.info(f"Overlay disabled and output equals input, nothing to do: {input_path}")
+                return True
+            shutil.copy2(input_path, output_path)
+            logging.debug(f"Copied image without overlay to: {output_path}")
+            return True
+
         # Extract filename without extension
         filename_base = Path(input_path).stem
         
