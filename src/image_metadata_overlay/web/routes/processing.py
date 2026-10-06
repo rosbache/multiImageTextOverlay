@@ -196,19 +196,19 @@ async def job_progress(job_id: str, request: Request):
     async def event_stream():
         while True:
             job = state.jobs.get(job_id, {})
-            data = json.dumps({
+            payload = {
                 "status": job.get("status"),
                 "processed": job.get("processed", 0),
                 "total": job.get("total", 0),
                 "current_file": job.get("current_file", ""),
-            })
-            yield f"data: {data}\n\n"
-
+            }
             if job.get("status") == "done":
-                results_data = json.dumps({"status": "done", "results": job.get("results", [])})
-                yield f"data: {results_data}\n\n"
+                # Single final event carrying the results, then close
+                payload["results"] = job.get("results", [])
+                yield f"data: {json.dumps(payload)}\n\n"
                 break
 
+            yield f"data: {json.dumps(payload)}\n\n"
             await asyncio.sleep(0.4)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

@@ -1888,7 +1888,7 @@ function startProgressStream(jobId, total) {
     progressBar.value = d.processed || 0;
     progressLabel.textContent = `${d.processed || 0} / ${d.total || total}`;
 
-    if (d.status === 'done') {
+    if (d.status === 'done' && d.results) {
       source.close();
       state.sseSource = null;
       const results = d.results || [];

@@ -7,7 +7,7 @@ if (-not (Test-Path $python)) {
     throw "Virtual environment not found at .venv. Create it and install dependencies before building."
 }
 
-& $python -m pip install .
+& $python -m pip install -e .
 & $python -m pip install "PyInstaller>=6.20,<7"
 
 Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
